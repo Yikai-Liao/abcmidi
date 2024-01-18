@@ -49,10 +49,10 @@
 
 #include <limits.h>
 /* Microsoft Visual C++ Version 6.0 or higher */
-#ifdef _MSC_VER
-#define snprintf _snprintf
-#define ANSILIBS
-#endif
+// #ifdef _MSC_VER
+// #define snprintf _snprintf
+// #define ANSILIBS
+// #endif
 
 #include <stdio.h>
 #include <math.h>
