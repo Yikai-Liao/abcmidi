@@ -66,14 +66,14 @@
 #define strchr index
 #endif
 
-#ifdef ANSILIBS
+// #ifdef ANSILIBS
 #include <ctype.h>
 #include <stdlib.h>
 #include <string.h>
-#else
-extern char *malloc ();
-extern char *strchr ();
-#endif
+// #else
+// extern char *malloc ();
+// extern char *strchr ();
+// #endif
 
 int lineno;
 int parsing_started = 0;
