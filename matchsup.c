@@ -85,14 +85,14 @@ int setOutFileCreator(char *fileName,unsigned long theType,
 #define strchr index
 #endif
 
-#ifdef ANSILIBS
+// #ifdef ANSILIBS
 #include <string.h>
 #include <stdlib.h>
 #include <ctype.h>
-#else
-extern char* strchr();
-extern void reduce();
-#endif
+// #else
+// extern char* strchr();
+// extern void reduce();
+// #endif
 
 #define MAXLINE 500
 #define INITTEXTS 20

@@ -29,18 +29,18 @@
 #endif
 
 /* for Microsoft VC 6++ or higher */
-#ifdef _MSC_VER
-#define ANSILIBS
-#define snprintf _snprintf
-#endif
+// #ifdef _MSC_VER
+// #define ANSILIBS
+// #define snprintf _snprintf
+// #endif
 
-#ifdef ANSILIBS
+// #ifdef ANSILIBS
 #include <ctype.h>
 #include <stdlib.h>
 #include <string.h>
-#else
-char* strchr();
-#endif
+// #else
+// char* strchr();
+// #endif
 #include "abc.h"
 #include "parseabc.h"
 #include "parser2.h"

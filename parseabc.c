@@ -43,10 +43,10 @@
 #define SIZE_ABBREVIATIONS 58
 
 /* [SS] 2015-09-28 changed _snprintf_s to _snprintf */
-#ifdef _MSC_VER
-#define snprintf _snprintf
-#define strncasecmp strnicmp
-#endif
+// #ifdef _MSC_VER
+// #define snprintf _snprintf
+// #define strncasecmp strnicmp
+// #endif
 
 
 #ifdef _MSC_VER

@@ -24,17 +24,17 @@
 /* There are 2 stages to this process. First the symbol positions are */
 /* calculated, then the PostScript symbols are generated.             */
 
-#ifdef _MSC_VER
-#define ANSILIBS 1
-#define snprintf _snprintf
-#endif
+// #ifdef _MSC_VER
+// #define ANSILIBS 1
+// #define snprintf _snprintf
+// #endif
 
 #include <stdio.h>
-#ifdef ANSILIBS
+// #ifdef ANSILIBS
 #include <stdlib.h>
 #include <ctype.h>
 #include <string.h>
-#endif
+// #endif
 
 #include "abc.h"
 #include "structs.h"

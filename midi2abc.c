@@ -65,14 +65,14 @@
 #define strchr index
 #endif
 
-#ifdef ANSILIBS
+// #ifdef ANSILIBS
 #include <string.h>
 #include <stdlib.h>
 #include <ctype.h>
-#else
-extern char* malloc();
-extern char* strchr();
-#endif
+// #else
+// extern char* malloc();
+// extern char* strchr();
+// #endif
 #include "midifile.h"
 #define BUFFSIZE 200
 /* declare MIDDLE C */

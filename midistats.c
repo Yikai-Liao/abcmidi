@@ -38,10 +38,10 @@
 
 #include <limits.h>
 /* Microsoft Visual C++ Version 6.0 or higher */
-#ifdef _MSC_VER
-#define snprintf _snprintf
-#define ANSILIBS
-#endif
+// #ifdef _MSC_VER
+// #define snprintf _snprintf
+// #define ANSILIBS
+// #endif
 
 #include <stdio.h>
 #include <math.h>
@@ -54,14 +54,14 @@
 #define strchr index
 #endif
 
-#ifdef ANSILIBS
+// #ifdef ANSILIBS
 #include <string.h>
 #include <stdlib.h>
 #include <ctype.h>
-#else
-extern char* malloc();
-extern char* strchr();
-#endif
+// #else
+// extern char* malloc();
+// extern char* strchr();
+// #endif
 #include "midifile.h"
 void initfuncs();
 void stats_finish();

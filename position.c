@@ -30,9 +30,9 @@
 #endif
 
 #include <stdio.h>
-#ifdef ANSILIBS
+// #ifdef ANSILIBS
 #include <stdlib.h>
-#endif
+// #endif
 #include "abc.h"
 #include "structs.h"
 #include "sizes.h"

@@ -38,13 +38,13 @@
 #define strchr index
 #endif
 
-#ifdef ANSILIBS
+// #ifdef ANSILIBS
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
-#else
-extern char* strchr();
-#endif
+// #else
+// extern char* strchr();
+// #endif
 
 #define MAX_VOICES 30
 /* should be plenty! */

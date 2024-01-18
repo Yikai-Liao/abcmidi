@@ -9,9 +9,9 @@
 
 #include <stdio.h>
 #include <stdlib.h>
-#ifdef ANSILIBS
+// #ifdef ANSILIBS
 #include <ctype.h>
-#endif
+// #endif
 #include "midifile.h"
 
 void initfuncs();

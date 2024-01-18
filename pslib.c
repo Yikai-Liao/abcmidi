@@ -43,9 +43,9 @@
 /*  #define ANSILIBS is just used to access time functions for */
 /*  %%CreationDate . This can safely be removed if it causes   */
 /*  compilation problems */
-#ifdef ANSILIBS
+// #ifdef ANSILIBS
 #include <time.h>
-#endif
+// #endif
 #include "drawtune.h"
 
 /* output library of PostScript routines for drawing music symbols */
@@ -68,7 +68,7 @@ struct bbox* boundingbox;
   };
   fprintf(f,"%%%%Title: %s\n", filename);
   fprintf(f,"%%%%Creator: yaps (abc to PostScript converter)\n");
-#ifdef ANSILIBS
+// #ifdef ANSILIBS
   {
     char timebuff[40];
     time_t now;
@@ -83,7 +83,7 @@ struct bbox* boundingbox;
     fprintf(f,"%s", timebuff);
 #endif
   };
-#endif
+// #endif
   fprintf(f,"%%%%LanguageLevel: 2\n");
   fprintf(f,"%%%%EndComments\n");
   fprintf(f,"\n");
