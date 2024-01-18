@@ -22,7 +22,6 @@ set(position position.c abc.h structs.h sizes.h)
 set(debug debug.c structs.h abc.h)
 set(matchsup matchsup.c abc.h parseabc.h parser2.h)
 
-# add the executable
 add_executable(abc2midi ${parseabc} ${store} ${genmidi} ${midifile} ${queues} ${parser2} stresspat.c)
 add_executable(abc2abc ${parseabc} ${toabc})
 add_executable(midi2abc ${midifile} ${midi2abc})

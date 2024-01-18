@@ -207,7 +207,7 @@ int main()
 #include "midifile.h"
 #include "genmidi.h"
 #include <stdio.h>
-#include <math.h>
+// #include <math.h>
 
 #ifdef __MWERKS__
 #define __MACINTOSH__ 1
@@ -850,7 +850,7 @@ static void setup_chordnames()
   addchordname("5", 2, list_5);
 }
 
-double ln(double x)
+double myln(double x)
 {
     double old_sum = 0.0;
     double xmlxpl = (x - 1) / (x + 1);
@@ -872,8 +872,8 @@ double ln(double x)
 
 #define LN10 2.3025850929940456840179914546844
 
-double log10( double x ) {
-    return ln(x) / LN10;
+double mylog10( double x ) {
+    return myln(x) / LN10;
 }
 
 void event_init(argc, argv, filename)
@@ -885,7 +885,7 @@ char **filename;
   int j;
   int arg,m,n;
   float afreq,semitone_shift; /* [SS] 2012-04-01 */
-  double log10();
+  double mylog10();
 
   /* look for code checking option */
   if (getarg("-c", argc, argv) != -1) {
@@ -979,7 +979,7 @@ char **filename;
     if (n < 1) {printf("expecting float between 415.30 and 466.16 after -TT\n");
                } else {
                retuning = 1;
-               semitone_shift = (float) (12.0 * log10(afreq/440.0f)/log10(2.0f)); /* [SS] 2015-10-08 extra parentheses */
+               semitone_shift = (float) (12.0 * mylog10(afreq/440.0f)/mylog10(2.0f)); /* [SS] 2015-10-08 extra parentheses */
                printf("afreq = %f semitone_shift = %f\n",afreq,semitone_shift);         
                if (semitone_shift >= 1.001) {printf("frequency %f must be less than 466.16\n",afreq);
                    retuning = 0;
