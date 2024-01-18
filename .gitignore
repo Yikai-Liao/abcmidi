@@ -97,3 +97,6 @@ Thumbs.db
 ~$*.doc*
 ~$*.ppt*
 ~$*.xls*
+**/.DS_Store
+**/.idea
+**/*build*
