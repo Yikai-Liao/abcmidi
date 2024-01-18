@@ -31,6 +31,7 @@ int filegetc()
 extern int arg_index;
 
 int main(argc,argv)
+int argc;
 char **argv;
 {
   FILE *efopen();
@@ -131,11 +132,12 @@ int chan, control, value;
 }
 
 
-void txt_pitchbend(chan,msb,lsb)
+/* [SS] 2017-11-16 submitted by Jonathan Hough (msb,lsb interchanged) */
+void txt_pitchbend(chan,lsb,msb)
 int chan, msb, lsb;
 {
   prtime();
-  printf("Pitchbend, chan=%d msb=%d lsb=%d\n",chan+1,msb,lsb);
+  printf("Pitchbend, chan=%d lsb=%d msb=%d\n",chan+1,msb,lsb);
 }
 
 void txt_program(chan,program)
@@ -255,6 +257,7 @@ int hr, mn, se, fr, ff;
 }
 
 void txt_arbitrary(leng,mess)
+int leng; /* [SDE] 2020-06-03 */
 char *mess;
 {
   prtime();

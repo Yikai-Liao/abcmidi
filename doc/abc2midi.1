@@ -1,8 +1,8 @@
-.TH ABC2MIDI 1 "27 August 2011"
+.TH ABC2MIDI 1 "June 2017"
 .SH NAME
 \fBabc2midi\fP \- converts abc file to MIDI file(s)
 .SH SYNOPSIS
-abc2midi \fIinfile\fP [\fIrefnum\fP] [\-c] [\-v] [\-ver] [\-t] [\-n limit] [\-CS] [\-quiet] [\-silent] [\-Q tempo] [\-NFNP] [\-NFER] [\-NGRA] [\-STFW] [\-OCC] [\-NCOM] [\-HARP] [\-BF] [\-TT] [\-o outfile] \-CSM [filename]
+abc2midi \fIinfile\fP [\fIrefnum\fP] [\-c] [\-v] [\-ver] [\-t] [\-n limit] [\-CS] [\-quiet] [\-silent] [\-Q tempo] [\-NFNP] [\-NFER] [\-NGRA] [\-NGUI] [\-STFW] [\-OCC] [\-NCOM] [\-HARP] [\-BF] [\-TT] [\-o outfile] \-CSM [filename]
 .SH DESCRIPTION
  The default action is to write a MIDI file for each abc tune
  with the filename <stem>N.mid, where <stem> is the filestem
@@ -51,6 +51,9 @@ Ignore any fermata indications (eg H or !fermata!).
 .TP
 .B -NGRA
 Ignore any grace notes.
+.TP
+.B -NGUI
+Ignore any guitar chords enclosed in double quotes.
 .TP
 .B -STFW
 Place lyric text in separate MIDI tracks.
@@ -134,7 +137,7 @@ selects melody channel n (in the range 1-16).
 .PP
 %%MIDI program [c] n
 .PP
-selects program n (in the range 1-128) on channel c. If c is not given, the
+selects program n (in the range 0-127) on channel c. If c is not given, the
 program is selected on the current melody channel. Most modern tone
 generators follow the General MIDI standard which defines the instrument
 type for each program number.
@@ -143,7 +146,7 @@ type for each program number.
 .PP
 controls the way note velocities are selected. The first note in a bar has
 velocity a. Other "strong" notes have velocity b and all the rest have velocity
-c. a, b and c must be in the range 0-128. The parameter n determines which
+c. a, b and c must be in the range 0-127. The parameter n determines which
 notes are "strong". If the time signature is x/y, then each note is given
 a position number k = 0, 1, 2 .. x-1 within each bar. Note that the units for
 n are not the unit note length. If k is a multiple of n, then the note is

@@ -1,5 +1,4 @@
-/*
- * midi2abc - program to convert MIDI files to abc notation.
+/* midi2abc - program to convert MIDI files to abc notation.
  * Copyright (C) 1998 James Allwright
  * e-mail: J.R.Allwright@westminster.ac.uk
  *
@@ -16,8 +15,8 @@
  * You should have received a copy of the GNU General Public License
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA
- *
  */
+ 
 
 /* new midi2abc - converts MIDI file to abc format files
  * 
@@ -46,15 +45,17 @@
  * based on public domain 'midifilelib' package.
  */
 
-#define VERSION "2.99 October 18 2015"
-#define SPLITCODE
+#define VERSION "3.59 February 08 2023 midi2abc"
 
+#include <limits.h>
 /* Microsoft Visual C++ Version 6.0 or higher */
 #ifdef _MSC_VER
+#define snprintf _snprintf
 #define ANSILIBS
 #endif
 
 #include <stdio.h>
+#include <math.h>
 #ifdef PCCFIX
 #define stdout 1
 #endif
@@ -81,6 +82,7 @@ void setupkey(int);
 int testtrack(int trackno, int barbeats, int anacrusis);
 int open_note(int chan, int pitch, int vol);
 int close_note(int chan, int pitch, int *initvol);
+void reset_back_array (); /* [SS] 2019-05-08 */ 
 
 
 /* Global variables and structures */
@@ -92,6 +94,7 @@ static FILE *outhandle; /* for producing the abc file */
 
 int tracknum=0;  /* track number */
 int division;    /* pulses per quarter note defined in MIDI header    */
+int quietLimit; /* minumum number of pulses with no activity */
 long tempo = 500000; /* the default tempo is 120 quarter notes/minute */
 int unitlen;     /* abc unit length usually defined in L: field       */
 int header_unitlen; /* first unitlen set                              */
@@ -100,11 +103,13 @@ int parts_per_unitlen = 2; /* specifies minimum quantization size */
 long laston = 0; /* length of MIDI track in pulses or ticks           */
 char textbuff[BUFFSIZE]; /*buffer for handling text output to abc file*/
 int trans[256], back[256]; /*translation tables for MIDI pitch to abc note*/
+int barback[256]; /* to reinitialize back[] after each bar line */
 char atog[256]; /* translation tables for MIDI pitch to abc note */
 int symbol[256]; /*translation tables for MIDI pitch to abc note */
 int key[12];
 int sharps;
-int trackno, maintrack;
+int trackno;
+int maintrack;
 int format; /* MIDI file type                                   */
 
 int karaoke, inkaraoke;
@@ -125,13 +130,16 @@ int summary;  /* flag - output summary info of MIDI file        */
 int keep_short; /*flag - preserve short notes                   */
 int swallow_rests; /* flag - absorb short rests                 */
 int midiprint; /* flag - run midigram instead of midi2abc       */
-#ifdef SPLITCODE
+int stats = 0; /* flag - gather and print statistics            */
 int usesplits; /* flag - split measure into parts if needed     */
-#endif
 int restsize; /* smallest rest to absorb                        */
-int no_triplets; /* flag - suppress triplets or broken rhythm   */
+/* [SS] 2017-01-01 */
+/*int no_triplets;  flag - suppress triplets or broken rhythm   */
+int allow_triplets; /* flag to allow triplets                   */
+int allow_broken;   /* flag to allow broken rhythms > <         */
 int obpl = 0; /* flag to specify one bar per abc text line      */
 int nogr = 0; /* flag to put a space between every note         */
+int noly = 0; /* flag to allow lyrics [SS] 2019-07-12           */
 int bars_per_line=4;  /* number of bars per output line         */
 int bars_per_staff=4; /* number of bars per music staff         */
 int asig, bsig;  /* time signature asig/bsig                    */
@@ -141,8 +149,10 @@ int header_bb;      /* first ticks/quarter note encountered     */
 int active_asig,active_bsig;  /* last time signature declared   */
 int last_asig, last_ksig; /* last time signature printed        */
 int barsize; /* barsize in parts_per_unitlen units                   */
+int chordthreshold; /* number of maximum number of pulses separating note */
 int Qval;        /* tempo - quarter notes per minute            */
 int verbosity=0; /* control amount of detail messages in abcfile*/
+int debug=0; /* for debugging */
 
 /* global arguments dependent on command line options or computed */
 
@@ -152,6 +162,8 @@ int keysig;
 int header_keysig=  -50;  /* header key signature                     */
 int active_keysig = -50;  /* last key signature declared        */
 int xchannel;  /* channel number to be extracted. -1 means all  */
+int timeunits = 1; /*tells prtime to display time in beats [SS] 2018-10-25 */
+double bend2cents = 40.96; /* [SS] 2022-02-12 */
 
 
 /* structure for storing music notes */
@@ -196,6 +208,8 @@ struct atrack {
   long startwait;
   int startunits;
   int drumtrack;
+  /* [SS] 2019-05-29 for debugging */
+  int texts;            /* number of text links in track */
 };
 
 /* can cope with up to 64 track MIDI files */
@@ -215,18 +229,24 @@ struct dlistx {
 
 int notechan[2048],notechanvol[2048]; /*for linking on and off midi
 					channel commands            */
-int last_tick; /* for getting last pulse number in MIDI file */
+int last_tick[17]; /* for getting last pulse number in MIDI file */
+int last_on_tick[17]; /* for detecting chords [SS] 2019-08-02 */
 
 char *title = NULL; /* for pasting title from argv[] */
 char *origin = NULL; /* for adding O: info from argv[] */
+int newline_flag = 0; /* [SS] 2019-06-14 signals new line was just issued */
 
 
 void remove_carriage_returns();
 int validnote();
 void printpitch(struct anote*);
 void printfract(int, int);
-
-
+void txt_trackend();
+void txt_noteoff(int,int,int);
+/* [SS] 2019-05-29 new functions to handle type 0 midi files */
+void txt_trackstart_type0();
+void txt_noteon_type0(int,int,int);
+void txt_program_type0(int,int);
 
 
 
@@ -286,9 +306,18 @@ char* addstring(s)
 char* s;
 {
   char* p;
+  int numbytes;
 
-  p = (char*) checkmalloc(strlen(s)+1);
-  strcpy(p, s);
+  /* p = (char*) checkmalloc(strlen(s)+1); */
+  /* Integer overflow leading to heap buffer overflow in midi2abc
+   * Debian Bug report log #924947 [SS] 2019-08-11
+   * https://bugs.debian.org/cgi-bin/bugreport.cgi?bug=924947
+   */
+  numbytes = strlen(s)+2; /* [SS] 2019-08-11 */
+  if (numbytes > 1024) numbytes = 1024; /* [SS] 2019-08-11 */
+  p = (char*) checkmalloc(numbytes); /* [SS] 2019-04-13  2019-08-11*/
+  strncpy(p, s,numbytes); /* [SS] 2017-08-30 [SDG] 2020-06-03 */
+  p[numbytes-1] = '\0'; /* [JA] 2020-11-01 */
   return(p);
 }
 
@@ -300,6 +329,7 @@ int type;
 {
   struct tlistx* newx;
 
+  track[trackno].texts = track[trackno].texts + 1; /* [SS] 2019-05-29 */
   newx = (struct tlistx*) checkmalloc(sizeof(struct tlistx));
   newx->next = NULL;
   newx->text = addstring(s);
@@ -315,6 +345,33 @@ int type;
   };
 }
   
+/* [SS] 2019-05-2019 forwards text to track[chn] */
+void addtext_type0(s, type,chn)
+/* add structure for text */
+/* used when parsing MIDI file */
+char* s;
+int type;
+int chn;
+{
+  struct tlistx* newx;
+
+  track[chn].texts = track[chn].texts + 1;
+  newx = (struct tlistx*) checkmalloc(sizeof(struct tlistx));
+  newx->next = NULL;
+  newx->text = addstring(s);
+  newx->type = type;
+  newx->when = Mf_currtime;
+  if (track[chn].texthead == NULL) {
+    track[chn].texthead = newx;
+    track[chn].texttail = newx;
+  }
+  else {
+    track[chn].texttail->next = newx;
+    track[chn].texttail = newx;
+  };
+}
+  
+
 
 
 /* The MIDI file has  separate commands for starting                 */
@@ -376,6 +433,40 @@ int p, ch, v;
   };
   if (ch == 9) {
     track[trackno].drumtrack = 1;
+  };
+  newnote->pitch = p;
+  newnote->chan = ch;
+  newnote->vel = v;
+  newnote->time = Mf_currtime;
+  laston = Mf_currtime;
+  newnote->tplay = Mf_currtime;
+  noteplaying(newnote);
+}
+
+/* [SS] 2019-05-29 forwards note to track[ch] */
+void addnote_type0(p, ch, v)
+/* add structure for note */
+/* used when parsing MIDI file */
+int p, ch, v;
+{
+  struct listx* newx;
+  struct anote* newnote;
+
+  track[ch].notes = track[ch].notes + 1;
+  newx = (struct listx*) checkmalloc(sizeof(struct listx));
+  newnote = (struct anote*) checkmalloc(sizeof(struct anote));
+  newx->next = NULL;
+  newx->note = newnote;
+  if (track[ch].head == NULL) {
+    track[ch].head = newx;
+    track[ch].tail = newx;
+  } 
+  else {
+    track[ch].tail->next = newx;
+    track[ch].tail = newx;
+  };
+  if (ch == 9) {
+    track[ch].drumtrack = 1;
   };
   newnote->pitch = p;
   newnote->chan = ch;
@@ -448,12 +539,12 @@ char *mode;
     return(f);
 }
 
-
 void error(s)
 char *s;
 {
     fprintf(stderr,"Error: %s\n",s);
 }
+
 
 
 
@@ -468,6 +559,12 @@ int xformat, ntrks, ldivision;
     } 
     else {
 /*     fprintf(outhandle,"%% type 0 midi file\n"); */
+/* [SS] 2019-05-29 use these functions for type 0 midi files */
+      Mf_trackstart =  txt_trackstart_type0;
+      Mf_trackend =  txt_trackend;
+      Mf_noteon =  txt_noteon_type0;
+      Mf_noteoff =  txt_noteoff;
+      Mf_program =  txt_program_type0;
      if(summary>0) {
 	     printf("This is a type 0 midi file.\n");
              printf("All the channels are in one track.\n");
@@ -482,6 +579,7 @@ void txt_trackstart()
 {
   laston = 0L;
   track[trackno].notes = 0;
+  track[trackno].texts = 0; /* [SS] 2019-05-29 */
   track[trackno].head = NULL;
   track[trackno].tail = NULL;
   track[trackno].texthead = NULL;
@@ -489,6 +587,26 @@ void txt_trackstart()
   track[trackno].tracklen = Mf_currtime;
   track[trackno].drumtrack = 0;
 }
+
+
+/* [SS] 2019-05-29 new function. We need all 16 tracks
+ * to handle type 0 midi file. Each track links to one
+ * of the 16 midi channels                            */
+void txt_trackstart_type0()
+{
+  int i;
+  for (i=0;i<16;i++) {
+    track[i].notes = 0;
+    track[i].texts = 0; /* [SS] 2019-05-29 */
+    track[i].head = NULL;
+    track[i].tail = NULL;
+    track[i].texthead = NULL;
+    track[i].texttail = NULL;
+    track[i].tracklen = Mf_currtime;
+    track[i].drumtrack = 0;
+    }
+}
+
 
 void txt_trackend()
 {
@@ -514,6 +632,20 @@ int chan, pitch, vol;
   };
 }
 
+/* [SS] 2019-05-29 new. Calls addnote_type0() function */
+void txt_noteon_type0(chan,pitch,vol)
+int chan, pitch, vol;
+{
+  if ((xchannel == -1) || (chan == xchannel)) {
+    if (vol != 0) {
+      addnote_type0(pitch, chan, vol);
+    } 
+    else {
+      notestop(pitch, chan);
+    };
+  };
+}
+
 void txt_noteoff(chan,pitch,vol)
 int chan, pitch, vol;
 {
@@ -526,6 +658,7 @@ void txt_pressure(chan,pitch,press)
 int chan, pitch, press;
 {
 }
+
 
 void txt_parameter(chan,control,value)
 int chan, control, value;
@@ -540,10 +673,8 @@ int chan, msb, lsb;
 void txt_program(chan,program)
 int chan, program;
 {
-/*
-  sprintf(textbuff, "%%%%MIDI program %d %d",
-         chan+1, program);
-*/
+/* suppress the %%MIDI program for channel 10 */
+  if (chan == 9) return;  /* [SS] 2020-02-17 */
   sprintf(textbuff, "%%%%MIDI program %d", program);
   addtext(textbuff,0);
 /* abc2midi does not use the same channel number as specified in 
@@ -553,9 +684,18 @@ int chan, program;
 */
 }
 
-void txt_chanpressure(chan,press)
-int chan, press;
+/* [SS] 2019-05-29 new. Calls addtext_type0 function. */
+void txt_program_type0(chan,program)
+int chan, program;
 {
+  if (chan == 9) return;  /* [SS] 2020-02-17 */
+  sprintf(textbuff, "%%%%MIDI program %d", program);
+  addtext_type0(textbuff,0,chan);
+/* abc2midi does not use the same channel number as specified in 
+  the original midi file, so we should not specify that channel
+  number in the %%MIDI program. If we leave it out the program
+  will refer to the current channel assigned to this voice.
+*/
 }
 
 void txt_sysex(leng,mess)
@@ -596,7 +736,7 @@ char *mess;
   int n;
   char *p = mess;
   char *buff;
-  char buffer2[BUFFSIZE];
+  char buffer2[BUFFSIZE+4]; /* [SS] 2022-02-12 */
 
   if ((type < 1)||(type > unrecognized))
       type = unrecognized;
@@ -618,8 +758,8 @@ char *mess;
     } 
     else {
       if (leng < BUFFSIZE - 3) {
-        sprintf(buffer2, " %s", textbuff); 
-        addtext(buffer2,0);
+        snprintf(buffer2, sizeof(buffer2), " %s", textbuff); /*[SDG] 2020-06-03*/
+        addtext(buffer2,type); /* [SS] 2019-07-12 */
       };
     };
   };
@@ -750,6 +890,14 @@ int leng;
  void no_op5(int dummy1, int dummy2, int dummy3, int dummy4, int dummy5) { }
 
 
+void print_txt_header(xformat,ntrks,ldivision)
+int xformat, ntrks, ldivision;
+{
+    division = ldivision; 
+    format = xformat;
+    printf("Header %d %d %d\n",format,ntrks,ldivision); /*[SS] 2019-11-13 */
+}
+
 
 void print_txt_noteon(chan, pitch, vol)
 int chan, pitch, vol;
@@ -769,7 +917,7 @@ else {
        printf("%d %ld %d %d %d %d\n",
        start_time, Mf_currtime, trackno+1, chan +1, pitch,initvol);
 
-      if(Mf_currtime > last_tick) last_tick = Mf_currtime;
+      if(Mf_currtime > last_tick[chan+1]) last_tick[chan+1] = Mf_currtime;
    }
 }
 
@@ -790,7 +938,7 @@ if (start_time >= 0)
 */
      printf("%d %ld %d %d %d %d\n",
        start_time, Mf_currtime, trackno+1, chan +1, pitch,initvol);
-    if(Mf_currtime > last_tick) last_tick = Mf_currtime;
+    if(Mf_currtime > last_tick[chan+1]) last_tick[chan+1] = Mf_currtime;
 }
 
 
@@ -835,17 +983,20 @@ int close_note(int chan, int pitch, int *initvol)
     return start_tick;
 }
 
+void print_txt_program(int chan,int program) {
+  /* [SS] 2019-11-06 */
+  printf("%ld Program  %2d %d \n",Mf_currtime,chan+1, program);
+  /*printf("Program  %2d %d \n",chan+1, program);*/
+  }
 
 /* mftext mode */
-int prtime()
+int prtime(int units)
 {
 /*  if(Mf_currtime >= pulses) ignore=0; 
   if (ignore) return 1; 
   linecount++;
   if(linecount > maxlines) {fclose(F); exit(0);}
 */
-  int units;
-  units = 2;
   if(units==1)
  /*seconds*/
      printf("%6.2f   ",mf_ticks2sec(Mf_currtime,division,tempo));
@@ -860,7 +1011,7 @@ int prtime()
 
 char * pitch2key(int note)
 {
-static char name[5];
+static char name[16]; /* [SDG] 2020-06-03 */
 char* s = name;
   switch(note % 12)
   {
@@ -910,6 +1061,11 @@ void mftxt_header (int format, int ntrks, int ldivision)
   printf("Header format=%d ntrks=%d division=%d\n",format,ntrks,division);
 }
 
+
+
+
+
+
 void mftxt_trackstart()
 {
   int numbytes;
@@ -920,6 +1076,8 @@ void mftxt_trackstart()
 }
 
 
+
+
 void mftxt_noteon(chan,pitch,vol)
 int chan, pitch, vol;
 {
@@ -927,12 +1085,13 @@ int chan, pitch, vol;
 /*
   if (onlychan >=0 && chan != onlychan) return;
 */
-  if (prtime()) return;
+  if (prtime(timeunits)) return;
   key = pitch2key(pitch);
   printf("Note on  %2d %2d (%3s) %3d",chan+1, pitch, key,vol);
   if (chan == 9) pitch2drum(pitch);
   printf("\n");
 }
+
 
 void mftxt_noteoff(chan,pitch,vol)
 int chan, pitch, vol;
@@ -941,19 +1100,29 @@ int chan, pitch, vol;
 /*
   if (onlychan >=0 && chan != onlychan) return;
 */
-  if (prtime()) return;
+  if (prtime(timeunits)) return;
   key = pitch2key(pitch);
   printf("Note off %2d %2d  (%3s) %3d\n",chan+1,pitch, key,vol);
 }
 
 
-void mftxt_pressure(chan,pitch,press)
+
+
+void mftxt_polypressure(chan,pitch,press)
 int chan, pitch, press;
 {
   char *key;
-  if (prtime()) return;
+  if (prtime(timeunits)) return;
   key = pitch2key(pitch);
-  printf("Pressure %2d   %3s %3d\n",chan+1,key,press);
+  printf("Polyphonic Key Pressure %2d   %3s %3d\n",chan+1,key,press);
+}
+void mftxt_chanpressure(chan,pitch,press)
+int chan, pitch, press;
+{
+  char *key;
+  if (prtime(timeunits)) return;
+  key = pitch2key(pitch);
+  printf("Pressure %2d   %3s %3d\n",chan+1,key,press); /* [SS] 2022.04.28 */
 }
 
 
@@ -962,17 +1131,17 @@ int chan, lsb, msb;
 {
  float bend;
  int pitchbend;
+ double cents;
 /*
   if (onlychan >=0 && chan != onlychan) return;
 */
-  if (prtime()) return;
+  if (prtime(timeunits)) return;
   /* [SS] 2014-01-05  2015-08-04*/
   pitchbend = (msb*128 + lsb);
   bend =  (float) (pitchbend - 8192);
-  bend = bend/4096.0f;
-  printf("Pitchbend %2d %d  bend = %6.4f\n",chan+1,pitchbend,bend);
+  cents = bend/bend2cents; /* [SS] 2022-02-12 */
+  printf("Pitchbend %2d %d  cents = %6.3f (cents)\n",chan+1,pitchbend,cents);
 }
-
 
 
 void mftxt_program(chan,program)
@@ -1025,45 +1194,40 @@ static char *patches[] = {
 /*
   if (onlychan >=0 && chan != onlychan) return;
 */
-  if (prtime()) return;
+  if (prtime(timeunits)) return;
   printf("Program  %2d %d (%s)\n",chan+1, program,patches[program]);
    }
 
-void mftxt_chanpressure(chan,press)
-int chan, press;
-{
-  prtime();
-  printf("Chanpres %2d pressure=%d\n",chan+1,press);
-}
 
 
 void mftxt_parameter(chan,control,value)
 int chan, control, value;
 {
+  /* removal of spaces [SS] 2022-04-06 in ctype array */
   static char *ctype[] = {
- "Bank Select",       "Modulation Wheel",     /*1*/
- "Breath controller", "unknown",              /*3*/
- "Foot Pedal",        "Portamento Time",      /*5*/
- "Data Entry",        "Volume",               /*7*/
+ "BankSelect",       "ModulationWheel",     /*1*/
+ "BreathController", "unknown",              /*3*/
+ "FootPedal",        "PortamentoTime",      /*5*/
+ "DataEntry",        "Volume",               /*7*/
  "Balance",           "unknown",              /*9*/
- "Pan position",      "Expression",           /*11*/
- "Effect Control 1",  "Effect Control 2",     /*13*/
+ "PanPosition",      "Expression",           /*11*/
+ "EffectControl1",  "EffectControl2",     /*13*/
  "unknown",           "unknown",              /*15*/
- "Slider 1",          "Slider 2",             /*17*/
- "Slider 3",          "Slider 4",             /*19*/
+ "Slider1",          "Slider2",             /*17*/
+ "Slider3",          "Slider4",             /*19*/
  "unknown",           "unknown",              /*21*/
  "unknown",           "unknown",              /*23*/
  "unknown",           "unknown",              /*25*/
  "unknown",           "unknown",              /*27*/
  "unknown",           "unknown",              /*29*/
  "unknown",           "unknown",              /*31*/
- "Bank Select (fine)",  "Modulation Wheel (fine)",    /*33*/
- "Breath controller (fine)",  "unknown",              /*35*/
- "Foot Pedal (fine)",   "Portamento Time (fine)",     /*37*/
- "Data Entry (fine)",   "Volume (fine)",              /*39*/
- "Balance (fine)",      "unknown",                    /*41*/
- "Pan position (fine)", "Expression (fine)",          /*43*/
- "Effect Control 1 (fine)",  "Effect Control 2 (fine)", /*45*/
+ "BankSelect(fine)",  "ModulationWheel(fine)",    /*33*/
+ "BreathController(fine)",  "unknown",              /*35*/
+ "FootPedal(fine)",   "PortamentoTime(fine)",     /*37*/
+ "DataEntry(fine)",   "Volume(fine)",              /*39*/
+ "Balance(fine)",      "unknown",                    /*41*/
+ "PanPosition(fine)", "Expression(fine)",          /*43*/
+ "EffectControl1(fine)",  "EffectControl2(fine)", /*45*/
  "unknown",           "unknown",             /*47*/
  "unknown",           "unknown",             /*49*/
  "unknown",           "unknown",             /*51*/
@@ -1073,25 +1237,25 @@ int chan, control, value;
  "unknown",           "unknown",             /*59*/
 "unknown",           "unknown",             /*61*/
  "unknown",           "unknown",             /*63*/
- "Hold Pedal",        "Portamento",          /*65*/
- "Susteno Pedal",     "Soft Pedal",          /*67*/
- "Legato Pedal",      "Hold 2 Pedal",        /*69*/
- "Sound Variation",   "Sound Timbre",        /*71*/
- "Sound Release Time",  "Sound Attack Time", /*73*/
- "Sound Brightness",  "Sound Control 6",     /*75*/
- "Sound Control 7",   "Sound Control 8",     /*77*/
- "Sound Control 9",   "Sound Control 10",    /*79*/
- "GP Button 1",       "GP Button 2",         /*81*/
- "GP Button 3",       "GP Button 4",         /*83*/
+ "HoldPedal",        "Portamento",          /*65*/
+ "SustenoPedal",     "SoftPedal",          /*67*/
+ "LegatoPedal",      "Hold2Pedal",        /*69*/
+ "SoundVariation",   "SoundTimbre",        /*71*/
+ "SoundReleaseTime",  "SoundAttackTime", /*73*/
+ "SoundBrightness",  "SoundControl6",     /*75*/
+ "SoundControl7",   "Sound Control8",     /*77*/
+ "SoundControl9",   "Sound Control10",    /*79*/
+ "GPButton1",       "GPButton2",         /*81*/
+ "GPButton3",       "GPButton4",         /*83*/
  "unknown",           "unknown",             /*85*/
  "unknown",           "unknown",             /*87*/
  "unknown",           "unknown",             /*89*/
- "unknown",           "Effects Level",       /*91*/
- "Tremolo Level",     "Chorus Level",        /*93*/
- "Celeste Level",     "Phaser Level",        /*95*/
- "Data button increment",  "Data button decrement", /*97*/
- "NRP (fine)",        "NRP (coarse)",        /*99*/
- "Registered parameter (fine)", "Registered parameter (coarse)", /*101*/
+ "unknown",           "EffectsLevel",       /*91*/
+ "TremoloLevel",     "ChorusLevel",        /*93*/
+ "CelesteLevel",     "PhaserLevel",        /*95*/
+ "DataButtonIncrement",  "DataButtonDecrement", /*97*/
+ "NRP(fine)",        "NRP(coarse)",        /*99*/
+ "RegisteredParameter(fine)", "RegisteredParameter(coarse)", /*101*/
  "unknown",           "unknown",             /*103*/
  "unknown",           "unknown",             /*105*/
  "unknown",           "unknown",             /*107*/
@@ -1101,14 +1265,15 @@ int chan, control, value;
  "unknown",           "unknown",             /*115*/
  "unknown",           "unknown",             /*117*/
  "unknown",           "unknown",             /*119*/
- "All Sound Off",     "All Controllers Off", /*121*/
- "Local Keyboard (on/off)","All Notes Off",  /*123*/
- "Omni Mode Off",     "Omni Mode On",        /*125*/
- "Mono Operation",    "Poly Operation"};
+ "AllSoundOff",     "AllControllersOff", /*121*/
+ "LocalKeyboard(on/off)","AllNotesOff",  /*123*/
+ "OmniModeOff",     "OmniModeOn",        /*125*/
+ "MonoOperation",    "PolyOperation"};
 
 /*  if (onlychan >=0 && chan != onlychan) return; */
-  if (prtime()) return;
+  if (prtime(timeunits)) return;
 
+  if (control == 6) bend2cents = 8192.0/(100.0*value); /*[SS] 2022-02-12 */
   printf("CntlParm %2d %s = %d\n",chan+1, ctype[control],value);
 }
 
@@ -1135,7 +1300,7 @@ char *mess;
 
   if ( type < 1 || type > unrecognized )
     type = unrecognized;
-  if (prtime()) return;
+  if (prtime(timeunits)) return;
   printf("Metatext (%s) ",ttype[type]);
   len = leng;
   if (len > 15) len = 15;
@@ -1148,6 +1313,8 @@ char *mess;
   printf("\n");
 }
 
+
+
 void mftxt_keysig(sf,mi)
 int sf, mi;
 {
@@ -1157,20 +1324,23 @@ int sf, mi;
     "Gmin", "Dmin", "Amin", "Emin", "Bmin", "F#min", "C#min", "G#min"};
   int index;
   index = sf + 7;
-  if (prtime()) return;
+  if (prtime(timeunits)) return;
   if (mi)
     printf("Metatext key signature %s (%d/%d)\n",minor[index],sf,mi);
   else
     printf("Metatext key signature %s (%d/%d)\n",major[index],sf,mi);
 }
 
+
+
 void mftxt_tempo(ltempo)
 long ltempo;
 {
   tempo = ltempo;
-  if (prtime()) return;
+  if (prtime(timeunits)) return;
   printf("Metatext tempo = %6.2f bpm\n",60000000.0/tempo);
 }
+
 
 void mftxt_timesig(nn,dd,cc,bb)
 int nn, dd, cc, bb;
@@ -1178,22 +1348,23 @@ int nn, dd, cc, bb;
   int denom = 1;
   while ( dd-- > 0 )
     denom *= 2;
-  if (prtime()) return;
+  if (prtime(timeunits)) return;
   printf("Metatext time signature=%d/%d\n",nn,denom);
 /*  printf("Time signature=%d/%d  MIDI-clocks/click=%d \
   32nd-notes/24-MIDI-clocks=%d\n", nn,denom,cc,bb); */
 }
 
+
 void mftxt_smpte(hr,mn,se,fr,ff)
 int hr, mn, se, fr, ff;
 {
-  if (prtime()) return;
+  if (prtime(timeunits)) return;
   printf("Metatext SMPTE, %d:%d:%d  %d=%d\n", hr,mn,se,fr,ff);
 }
 
 void mftxt_metaeot()
 {
-  if (prtime()) return;
+  if (prtime(timeunits)) return;
   printf("Meta event, end of track\n");
 }
 
@@ -1201,15 +1372,15 @@ void mftxt_metaeot()
 void initfunc_for_midinotes()
 {
     Mf_error = error;
-    Mf_header = txt_header;
-    Mf_trackstart = txt_trackstart;
+    Mf_header = print_txt_header;
+    Mf_trackstart = no_op0;
     Mf_trackend = txt_trackend;
     Mf_noteon = print_txt_noteon;
     Mf_noteoff = print_txt_noteoff;
     Mf_pressure = no_op3;
     Mf_parameter = no_op3;
     Mf_pitchbend = no_op3;
-    Mf_program = no_op2;
+    Mf_program = print_txt_program;
     Mf_chanpressure = no_op3;
     Mf_sysex = no_op2;
     Mf_metamisc = no_op3;
@@ -1233,7 +1404,7 @@ void initfunc_for_mftext()
     Mf_trackend = txt_trackend;
     Mf_noteon = mftxt_noteon;
     Mf_noteoff = mftxt_noteoff;
-    Mf_pressure =mftxt_pressure;
+    Mf_pressure =mftxt_polypressure;
     Mf_parameter = mftxt_parameter;
     Mf_pitchbend = mftxt_pitchbend;
     Mf_program = mftxt_program;
@@ -1266,7 +1437,7 @@ void initfuncs()
     Mf_parameter =  txt_parameter;
     Mf_pitchbend =  txt_pitchbend;
     Mf_program =  txt_program;
-    Mf_chanpressure =  txt_chanpressure;
+    Mf_chanpressure =  txt_pressure;
     Mf_sysex =  txt_sysex;
     Mf_metamisc =  txt_metamisc;
     Mf_seqnum =  txt_metaseq;
@@ -1663,6 +1834,8 @@ struct anote* p;
   struct dlistx* newx;
   struct dlistx* place;
 
+  if (debug > 3) printf("addtochord %d\n",p->pitch);
+
   newx = (struct dlistx*) checkmalloc(sizeof(struct dlistx));
   newx->note = p;
   newx->next = NULL;
@@ -1740,6 +1913,7 @@ int gap;
     };
     p = p->next;
   };
+  if (debug >3) printf("find_shortest %d --> %d\n",gap,min);
   return(min);
 }
 
@@ -1749,6 +1923,7 @@ int len;
 {
   struct dlistx* p;
 
+  if (debug > 3 && len >0) printf("\nadvancechord %d\n",len);
   p = chordhead;
   while (p != NULL) {
     if (p->note->playnum <= len) {
@@ -1770,10 +1945,12 @@ int len;
 void freshline()
 /* if the current line of abc or text is non-empty, start a new line */
 {
+  if (newline_flag) return; /* [SS] 2019-06-14 */
   if (midline == 1) {
     fprintf(outhandle,"\n");
     midline = 0;
   };
+  newline_flag = 1; /* [SS] 2019-06-14 */
 }
 
 
@@ -1803,6 +1980,52 @@ while (i != NULL && k < end)
   k++;
   i = i->next;
   }
+}
+
+/* [SS] 2019-05-29 new. To see what is going on. I usually
+ * call it from the debugger just before printtrack().
+ */
+void listtrack_sizes () 
+{
+int i;
+for (i =0;i<16;i++) {
+  printf("track %d = %d notes %d texts\n",i,track[i].notes,track[i].texts);
+  }
+}
+
+
+void pitch_percentiles (int trackno, int * ten, int * ninety)
+{
+int histogram[128];
+struct listx* i;
+struct anote* n;
+int j,p;
+float qprob,total;
+for (j=0;j<127;j++) histogram[j] = 0;
+i = track[trackno].head;
+while (i != NULL)
+  {
+  n = i->note;
+  p = (int) n->pitch;
+  if (p >-1 && p < 127) histogram[p]++;
+  i = i->next;
+  }
+/*printf("pitch histogram ");
+for (j=0;j<127;j++) printf(" %d",histogram[j]);
+printf("\n");
+*/
+for (j=0;j<127;j++)
+  histogram[j+1] = histogram[j+1] + histogram[j];
+*ten = 0;
+*ninety = 0;
+if (histogram[126] == 0) return;
+total = (float) histogram[126];
+for (j=0;j<127;j++) {
+ qprob = (float) histogram[j]/total;
+ if (qprob < 0.1) *ten = j;
+ if (qprob < 0.9) *ninety = j;
+ }
+/* printf("10 and 90 percentiles = %d %d\n",*ten,*ninety); */
 }
 
 
@@ -1877,7 +2100,8 @@ struct anote* j;
   } 
   else {
     po = p % 12;
-    if ((back[trans[p]] != p) || (key[po] == 1)) {
+    /* if ((back[trans[p]] != p) || (key[po] == 1)) { [SS] 2010-05-08 */
+    if (back[trans[p]] != p ) {  /* [SS] 2019-05-08 */
       fprintf(outhandle,"%c%c", symbol[po], atog[p]);
       for (i=p%12; i<256; i += 12) /* apply accidental to all octaves */
          back[trans[i]] = i;
@@ -1950,7 +2174,7 @@ int len;
   i = chordhead;
   if (i == NULL) {
     /* no notes in chord */
-#ifdef SPLITCODE
+#ifdef zSPLITCODE
     fprintf(outhandle,"x");
 #else
     fprintf(outhandle,"z");
@@ -1972,7 +2196,7 @@ int len;
       fprintf(outhandle,"[");
       while (i != NULL) {
         printpitch(i->note);
-        printfract(len, parts_per_unitlen);
+        /* printfract(len, parts_per_unitlen); [SS] 2020-01-06 */
         if (len < i->note->playnum) {
           fprintf(outhandle,"-");
         };
@@ -1980,16 +2204,19 @@ int len;
         i = i->next;
       };
       fprintf(outhandle,"]");
+      printfract(len, parts_per_unitlen); /* [SS] 2020-01-06 */
       midline = 1;
     };
   };
+  newline_flag = 0; /* [SS] 2019-06-14 */
 }
 
-char dospecial(i, barnotes, featurecount)
+char dospecial(i, barnotes, featurecount,allow_broken,allow_triplets)
 /* identify and print out triplets and broken rhythm */
 struct listx* i;
 int* barnotes;
 int* featurecount;
+int allow_broken,allow_triplets;
 {
   int v1, v2, v3, vt;
   int xa, xb;
@@ -2019,7 +2246,8 @@ int* featurecount;
     /* shouldn't happen, but avoids possible divide by zero */
     return(' ');
   };
-  if (((v1+v2)%2 == 0) && ((v1+v2)%3 != 0)) {
+  /* [SS] 2017-01-01 */
+  if (allow_broken == 1 && ((v1+v2)%2 == 0) && ((v1+v2)%3 != 0)) {
     vt = (v1+v2)/2;
       if (vt == validnote(vt)) {
       /* do not try to break a note which cannot be legally expressed */
@@ -2045,6 +2273,7 @@ int* featurecount;
       };
     };
   };
+  if (allow_triplets == 0) return(' '); /* [SS] 2017-01-01 */
   /* look for triplet */
   if (i->next->next != NULL) {
     t3 = i->next->next->note->dtnext;
@@ -2113,10 +2342,17 @@ int trackno;
   char ch;
   int type,sf,mi,nn,denom,bb;
 
+  sf = 0; /* [SS] 2021-06-27 */
+
   while (((*textplace) != NULL) && ((*textplace)->when <= t)) {
     str = (*textplace)->text;
     ch = *str;
     type = (*textplace)->type;
+    if (type == 5 && noly == 1) {  /* [SS] 2019-07-12 */
+        *textplace = (*textplace)->next;
+	return;
+        }
+
     remove_carriage_returns(str);
     if (((int)ch == '\\') || ((int)ch == '/')) {
       inkaraoke = 1;
@@ -2146,6 +2382,7 @@ int trackno;
           };
           break;
       };
+      newline_flag = 0; /* [SS] 2019-06-14 */
     } 
     else {
       freshline();
@@ -2177,16 +2414,22 @@ int trackno;
 	active_bsig=denom;
 	}
       break;
+      case 5: /* lyric [SS] 2019-07-12*/
+      if (ch != '%') 
+      fprintf(outhandle,"%%%s\n", str);
+      else 
+      fprintf(outhandle,"%s\n", str);
+      break;
      default:
       break;
       }
+      newline_flag = 1; /* 2019-06-14 */
   }
   *textplace = (*textplace)->next;
  }
 }
 
 
-#ifdef SPLITCODE
 
 /* This function identifies irregular chords, (notes which
    do not exactly overlap in time). The notes in the
@@ -2235,7 +2478,7 @@ void label_split(struct anote *note, int activesplit)
 }
 
 
-void label_split_voices (int trackno)
+int label_split_voices (int trackno)
 {
 /* This function sorts all the notes in the track into
    separate split part. A note is placed into a separate
@@ -2253,10 +2496,11 @@ int activesplit,nsplits;
 int done;
 struct listx* i;
 int k;
-int firstposnum;
+int firstposnum = 0; /* [SDG] 2020-06-03 */
 /* initializations */
 activesplit = 0;
 nsplits = 0;
+if (debug > 4) printf("label_split_voices:\n");
 for (k=0;k<10;k++) {
        splitstart[k]=splitend[k]=lastposnum[k]=0;
        prevnote[k] = NULL;
@@ -2264,7 +2508,7 @@ for (k=0;k<10;k++) {
        splitgap[k]=0;
        }
 i = track[trackno].head;
-if (track[trackno].tail == 0x0) return;
+if (track[trackno].tail == 0x0) {return 0;}
 endposnum =track[trackno].tail->note->posnum +
            track[trackno].tail->note->playnum;
 
@@ -2318,11 +2562,12 @@ while (i != NULL)
      label_split(i->note,activesplit);
      }
    } 
-/*  printf("note %d links to %d  %d (%d %d)\n",i->note->pitch,activesplit,
+if (debug>2)  printf("note %d links to %d  %d (%d %d)\n",i->note->pitch,activesplit,
 i->note->posnum,splitstart[activesplit],splitend[activesplit]);
-*/
+
   i = i->next;
   } /* end while loop */
+return nsplits;
 }
 
 
@@ -2346,265 +2591,56 @@ return n;
 }
 
 
+/* [SS] 2019-06-26 */
+int firstgap[10];
 
-
-
-void printtrack_with_splits(trackno, anacrusis)
-int trackno,  anacrusis;
-/* This function is an adaption of printtrack so that
-   notes with separate split numbers are in separated
-   regions in the measure. (Separated with &'s).
-   To do this we must make multiple passes through
-   each bar and maintain separate chordlists (in
-   event that some chords overlap over more than
-   one measure).
-*/
-{
-  struct listx* i;
-  struct tlistx* textplace;
-  struct tlistx* textplace0; /* track 0 text storage */
-  int step, gap;
-  int barnotes;
-  int barcount;
-  int bars_on_line;
-  long now;
-  char broken;
-  int featurecount;
-  int last_barsize,barnotes_correction;
-  int splitnum = 0;
-  int j;
-  int nlines;
-  int done;
-
-  nlines= 0;
-  label_split_voices (trackno);
-
-  midline = 0;
-  featurecount = 0;
-  inkaraoke = 0;
-  now = 0L;
-  broken = ' ';
-  for (j=0;j<10;j++) {
-      splitchordhead[j] = NULL;
-      splitchordtail[j] = NULL;
-      }
-  i = track[trackno].head;
-  textplace = track[trackno].texthead;
-  textplace0 = track[0].texthead;
-  /*gap = track[trackno].startunits;*/ gap = 0;
-  if (anacrusis > 0) {
-    barnotes = anacrusis;
-    barcount = -1;
-  } 
-  else {
-    barnotes = barsize;
-    barcount = 0;
-  };
-  bars_on_line = 0;
-  last_barsize = barsize;
-  active_asig = header_asig;
-  active_bsig = header_bsig;
-  setup_timesig(header_asig,header_bsig,header_bb);
-  active_keysig = header_keysig;
-  handletext(now, &textplace, trackno);
-  splitnum = 0;
-  chordhead = splitchordhead[splitnum]; 
-  chordtail = splitchordtail[splitnum]; 
-  gap = splitgap[splitnum];
-
-  while((i != NULL)||(gap != 0)) {
-    if (gap == 0) {
-      /* do triplet here */
-      if (featurecount == 0) {
-	if (!no_triplets) {
-	  broken = dospecial(i, &barnotes, &featurecount);
-	};
-      };
-
-/* ignore any notes that are not in the current splitnum */
-      if (i->note->splitnum == splitnum) {
-               /*printf("\nadding ");
-                 printnote(i); */
-	addtochord(i->note);
-	gap = i->note->xnum;
-	now = i->note->time;
-	}
-
-      i = i->next;
-      advancechord(0); /* get rid of any zero length notes */
-      if (trackcount > 1 && trackno !=0)
-	      handletext(now, &textplace0, trackno);
-      handletext(now, &textplace,trackno);
-      barnotes_correction = barsize - last_barsize;
-      barnotes += barnotes_correction;
-      last_barsize = barsize;
-    } 
-    else {
-      step = findshortest(gap);
-      if (step > barnotes) {
-	step = barnotes;
-      };
-      step = validnote(step);
-      if (step == 0) {
-	fatal_error("Advancing by 0 in printtrack!");
-      };
-      if (featurecount == 3)
-        {
-        fprintf(outhandle," (3");
-        };
-      printchord(step); if ( featurecount > 0) { featurecount = featurecount - 1; };
-      if ((featurecount == 1) && (broken != ' ')) {
-        fprintf(outhandle,"%c", broken);
-      };
-      advancechord(step);
-      gap = gap - step;
-      barnotes = barnotes - step;
-
-/* at the end of the bar we must decide whether to place
-   a | or &. If we place a & then we have to return to
-   the beginning of the bar and process the next split number.
-*/  
-      if (barnotes == 0) { /* end of bar  ? */
-        nlines++;
-        if (nlines > 5000) {
-            printf("\nProbably infinite loop: aborting\n");
-            fprintf(outhandle,"\n\nProbably infinite loop: aborting\n");
-            return;
-            }
-/* save state for the last splitnum before going to the next */
-        last_i[splitnum] = i;
-        splitchordhead[splitnum] = chordhead;
-        splitchordtail[splitnum] = chordtail;
-        splitgap[splitnum] = gap;
-
-/*     look for the next splitnum which contains notes in
-       the current measure. If not, end the measure.
-*/
-        done = 0;
-        while (done != 1) {
-           splitnum = nextsplitnum(splitnum);
-
-           if (splitnum == -1) {
-              fprintf(outhandle," | ");
-              splitnum = nextsplitnum(splitnum);
-              done = 1;
-              break;
-              }
-
-           if (splitgap[splitnum] >= barsize)
-               {
-               splitgap[splitnum] -= barsize;
-               continue; /* look for other splits */
-               }
- 
-           fprintf(outhandle, " & ");
-           i = last_i[splitnum]; 
-           done = 1;
-           }
-/* restore state for the next splitnum */
-       chordhead = splitchordhead[splitnum];
-       chordtail = splitchordtail[splitnum];
-       checkchordlist();
-       gap = splitgap[splitnum];
-       i = last_i[splitnum];
-
-       /*
-        printf("returning to %ld ",i->note->time);
-        printpitch(i->note);
-        printf("\n");
-       */
-     
-        barnotes = barsize;
-        barcount = barcount + 1;
-	bars_on_line++;
-        if (barcount >0 && barcount%bars_per_staff == 0)  {
-		freshline();
-		bars_on_line=0;
-	}
-     /* can't zero barcount because I use it for computing maxbarcount */
-        else if(bars_on_line >= bars_per_line && i != NULL) {
-		fprintf(outhandle," \\");
-	       	freshline();
-	        bars_on_line=0;}
-      }
-      else if (featurecount == 0) {
-          /* note grouping algorithm */
-          if ((barsize/parts_per_unitlen) % 3 == 0) {
-            if ( (barnotes/parts_per_unitlen) % 3 == 0
-               &&(barnotes%parts_per_unitlen) == 0) {
-              fprintf(outhandle," ");
-            };
-          } 
-	  else {
-            if (((barsize/parts_per_unitlen) % 2 == 0)
-                && (barnotes % parts_per_unitlen) == 0
-                && ((barnotes/parts_per_unitlen) % 2 == 0)) {
-              fprintf(outhandle," ");
-            };
-          };
-      }
-      if (nogr) fprintf(outhandle," ");
-    };
-   if (i == NULL) /* end of track before end of measure ? */
-    {
-     last_i[splitnum] = i;
-     splitchordhead[splitnum] = chordhead;
-     splitchordtail[splitnum] = chordtail;
-     splitgap[splitnum] = gap;
-     splitnum = nextsplitnum(splitnum);
-     if (splitnum == -1) break;
-     chordhead = splitchordhead[splitnum];
-     chordtail = splitchordtail[splitnum];
-     gap = splitgap[splitnum];
-     i = last_i[splitnum];
-     if (barnotes != barsize) fprintf(outhandle, " & ");
-     barnotes = barsize;
-    }
- 
-  };
-  /* print out all extra text */
-  while (textplace != NULL) {
-    handletext(textplace->when, &textplace, trackno);
-  };
-  freshline();
-  if (barcount > maxbarcount) maxbarcount = barcount;
+void set_first_gaps (int trackno) {
+struct listx* i;
+int j;
+int start;
+int splitnumber;
+start = track[trackno].startunits;
+for (j=0;j<10;j++) firstgap[j] = -1;
+i = track[trackno].head;
+while((i != NULL)) {
+  splitnumber =  i->note->splitnum; 
+  if (firstgap[splitnumber] < 0) {
+     firstgap[splitnumber] = start + i->note->posnum;
+     /* printf("split = %d gap = %d\n",splitnumber,firstgap[splitnumber]);*/
+     }
+  i = i->next;
+  }
 }
 
 
-
-void printtrack_split_voice(trackno, anacrusis)
-/* print out one track as abc */
-int trackno,  anacrusis;
-{
+/* [SS] 2019-06-13 */
+void printtrack_split (int trackno, int splitnum, int anacrusis)
+  {
   struct listx* i;
   struct tlistx* textplace;
   struct tlistx* textplace0; /* track 0 text storage */
   int step, gap;
+  int featurecount;
+  int lastnote_in_split;
+  char broken;
   int barnotes;
   int barcount;
-  int bars_on_line;
-  long now;
-  char broken;
-  int featurecount;
   int last_barsize,barnotes_correction;
+  long now;
   int nlines;
-  int splitnum;
-  int lastnote_in_split;
+  int bars_on_line;
 
-  nlines= 0;
-  lastnote_in_split = 0;
-  label_split_voices (trackno);
-  midline = 0;
   featurecount = 0;
-  inkaraoke = 0;
-  now = 0L;
+  lastnote_in_split = 0;
   broken = ' ';
-  chordhead = NULL;
+  now = 0L;
+  nlines= 0;
+  bars_on_line = 0;
+  chordhead = NULL;  /* [SS] 2019-06-17 */
   chordtail = NULL;
   i = track[trackno].head;
-  textplace = track[trackno].texthead;
-  textplace0 = track[0].texthead;
-  gap = track[trackno].startunits;
+  /* gap = track[trackno].startunits; */
+  gap = firstgap[splitnum];  /* [SS] 2019-06-26 */
   if (anacrusis > 0) {
     barnotes = anacrusis;
     barcount = -1;
@@ -2613,24 +2649,20 @@ int trackno,  anacrusis;
     barnotes = barsize;
     barcount = 0;
   };
-  bars_on_line = 0;
   last_barsize = barsize;
-  active_asig = header_asig;
-  active_bsig = header_bsig;
-  setup_timesig(header_asig,header_bsig,header_bb);
-  active_keysig = header_keysig;
-  handletext(now, &textplace, trackno);
-  splitnum = 0;
-  gap = splitgap[splitnum];
-  if (count_splits() > 1) fprintf(outhandle,"V: split%d%c\n",trackno+1,'A'+splitnum);
+
+  textplace = track[trackno].texthead;
+  textplace0 = track[0].texthead;
+  fprintf(outhandle,"V: split%d%c\n",trackno+1,'A'+splitnum);
+  newline_flag = 1; /* [SS] 2019-06-14 */
 
   while((i != NULL)||(gap != 0)) {
     if (gap == 0) {
       if (i->note->posnum + i->note->xnum == endposnum) lastnote_in_split = 1;
       /* do triplet here */
       if (featurecount == 0) {
-        if (!no_triplets) {
-          broken = dospecial(i, &barnotes, &featurecount);
+        if (allow_triplets || allow_broken) {  /* [SS] 2017-01-01 */
+          broken = dospecial(i, &barnotes, &featurecount,allow_broken,allow_triplets);
         };
       };
 /* ignore any notes that are not in the current splitnum */
@@ -2643,9 +2675,9 @@ int trackno,  anacrusis;
 	}
       i = i->next;
       advancechord(0); /* get rid of any zero length notes */
-      if (trackcount > 1 && trackno !=0)
+      if (trackcount > 1 && trackno !=0 && splitnum == 0)
 	      handletext(now, &textplace0, trackno);
-      handletext(now, &textplace,trackno);
+      /* handletext(now, &textplace,trackno); 2019-06-26 */
       barnotes_correction = barsize - last_barsize;
       barnotes += barnotes_correction;
       last_barsize = barsize;
@@ -2681,6 +2713,7 @@ int trackno,  anacrusis;
             return;
             }
         fprintf(outhandle,"|");
+	reset_back_array();
         barnotes = barsize;
         barcount = barcount + 1;
 	bars_on_line++;
@@ -2696,10 +2729,12 @@ int trackno,  anacrusis;
       }
       else if (featurecount == 0) {
           /* note grouping algorithm */
-          if ((barsize/parts_per_unitlen) % 3 == 0) {
+          /* [SS] 2016-07-20 waltz is a special case */
+          if ((barsize/parts_per_unitlen) % 3 == 0 && asig != 3) {
             if ( (barnotes/parts_per_unitlen) % 3 == 0
                &&(barnotes%parts_per_unitlen) == 0) {
               fprintf(outhandle," ");
+	      newline_flag = 0; /* [SS] 2019-06-14 */
             };
           } 
 	  else {
@@ -2707,39 +2742,46 @@ int trackno,  anacrusis;
                 && (barnotes % parts_per_unitlen) == 0
                 && ((barnotes/parts_per_unitlen) % 2 == 0)) {
               fprintf(outhandle," ");
+	      newline_flag = 0; /* [SS] 2019-06-14 */
             };
           };
       }
-      if (nogr) fprintf(outhandle," ");
+      if (nogr) {fprintf(outhandle," "); newline_flag = 0;}
     };
-  if (i == NULL && gap == 0) 
-    {
-    i = track[trackno].head;
-    splitnum = nextsplitnum(splitnum);
-    lastnote_in_split = 0;
-    if (splitnum == -1) break;
-    gap = splitgap[splitnum];
-    if(barnotes != barsize) freshline();
-    fprintf(outhandle,"V:split%d%c\n",trackno+1,'A'+splitnum);
-    if (anacrusis > 0) {
-      barnotes = anacrusis;
-      barcount = -1;
-      } 
-    else {
-      barnotes = barsize;
-      barcount = 0;
-      };
-    }
-  };
-  /* print out all extra text */
-  while (textplace != NULL) {
-    handletext(textplace->when, &textplace, trackno);
-  };
-  freshline();
   if (barcount > maxbarcount) maxbarcount = barcount;
+  }
+  freshline(); /* [SS] 2019-06-17 */
 }
 
-#endif
+void printtrack_split_voice(trackno, anacrusis)
+/* print out one track as abc */
+int trackno,  anacrusis;
+{
+  int splitnum;
+  long now;
+  int nsplits;
+  int i;
+  struct tlistx* textplace;
+  nsplits = label_split_voices (trackno);
+  /*printf("%d splits were detected\n",nsplits);*/
+  set_first_gaps (trackno);  /* [SS] 2019-06-26 */
+  textplace = track[trackno].texthead;
+  midline = 0;
+  inkaraoke = 0;
+  now = 0L;
+  active_asig = header_asig;
+  active_bsig = header_bsig;
+  setup_timesig(header_asig,header_bsig,header_bb);
+  active_keysig = header_keysig;
+  handletext(now, &textplace, trackno);
+  splitnum = 0;
+  /* gap = splitgap[splitnum]; [SS] 2019-05-12 */
+  /* [SS] 2019-06-13 */
+  for (i=0;i <nsplits;i++) 
+     printtrack_split(trackno, i, anacrusis);
+}
+
+
 
 void printtrack(trackno, anacrusis)
 /* print out one track as abc */
@@ -2785,11 +2827,12 @@ int trackno,  anacrusis;
   handletext(now, &textplace, trackno);
 
   while((i != NULL)||(gap != 0)) {
+    if (debug > 4) printf("gap = %d\n",gap);
     if (gap == 0) {
       /* do triplet here */
       if (featurecount == 0) {
-        if (!no_triplets) {
-          broken = dospecial(i, &barnotes, &featurecount);
+        if (allow_triplets || allow_broken) {  /* [SS] 2017-01-01 */
+          broken = dospecial(i, &barnotes, &featurecount,allow_broken,allow_triplets);
         };
       };
       /* add notes to chord */
@@ -2798,8 +2841,11 @@ int trackno,  anacrusis;
       now = i->note->time;
       i = i->next;
       advancechord(0); /* get rid of any zero length notes */
-      if (trackcount > 1 && trackno !=0)
+
+      /*if (trackcount > 1 && trackno !=0)
 	      handletext(now, &textplace0, trackno);
+      [SS] 2019-12-30   */
+
       handletext(now, &textplace,trackno);
       barnotes_correction = barsize - last_barsize;
       barnotes += barnotes_correction;
@@ -2830,6 +2876,7 @@ int trackno,  anacrusis;
       barnotes = barnotes - step;
       if (barnotes == 0) {
         fprintf(outhandle,"|");
+	reset_back_array();
         barnotes = barsize;
         barcount = barcount + 1;
 	bars_on_line++;
@@ -2845,10 +2892,12 @@ int trackno,  anacrusis;
       }
       else if (featurecount == 0) {
           /* note grouping algorithm */
-          if ((barsize/parts_per_unitlen) % 3 == 0) {
+          /* [SS] 2016-07-20 waltz is a special case */
+          if ((barsize/parts_per_unitlen) % 3 == 0 && asig != 3) {
             if ( (barnotes/parts_per_unitlen) % 3 == 0
                &&(barnotes%parts_per_unitlen) == 0) {
               fprintf(outhandle," ");
+	      newline_flag = 0; /* [SS] 2019-06-14 */
             };
           } 
 	  else {
@@ -2856,10 +2905,13 @@ int trackno,  anacrusis;
                 && (barnotes % parts_per_unitlen) == 0
                 && ((barnotes/parts_per_unitlen) % 2 == 0)) {
               fprintf(outhandle," ");
+	      newline_flag = 0; /* [SS] 2019-06-14 */
             };
           };
       }
-      if (nogr) fprintf(outhandle," ");
+      if (nogr) {fprintf(outhandle," ");
+	         newline_flag = 0;
+                }
     };
   };
   /* print out all extra text */
@@ -2899,6 +2951,13 @@ void printQ()
 
 
 
+/* [SS] 2019-05-08 */
+void reset_back_array () 
+/* reset back[] after each bar line */
+{
+  int i;
+  for (i=0;i<256;i++) back[i] = barback[i];
+}
 
 void setupkey(sharps)
 int sharps;
@@ -2914,14 +2973,16 @@ int sharps;
   if (minkey%2 != 0) {
     minkey = (minkey+6)%12;
   };
-  strcpy(sharp,    "ccddeffggaab");
-  strcpy(shsymbol, "=^=^==^=^=^=");
+  /* [SS] 2017-12-20 changed strncpy to memcpy and limit to 12 */
+  /*strncpy(sharp,    "ccddeffggaab",16);  [SS] 2017-08-30 */
+  memcpy(sharp,    "ccddeffggaab",12);  /* [SS] 2017-12-20 */
+  memcpy(shsymbol, "=^=^==^=^=^=",12); /* [SS] 2017-12-20 */
   if (sharps == 6) {
     sharp[6] = 'e';
     shsymbol[6] = '^';
   };
-  strcpy(flat, "cddeefggaabb");
-  strcpy(flsymbol, "=_=_==_=_=_=");
+  memcpy(flat, "cddeefggaabb",12); /* [SS] 2017-12-20 */
+  memcpy(flsymbol, "=_=_==_=_=_=",12); /* [SS] 2017-12-20 */
   /* Print out key */
 
   if (sharps >= 0) {
@@ -2968,9 +3029,10 @@ int sharps;
       atog[j] = (char) (int) atog[j] + 'A' - 'a';
     };
     if (key[t] == 0) {
-      back[trans[j]] = j;
+      barback[trans[j]] = j; /* [SS] 2019-05-08 */
     };
   };
+reset_back_array(); /* [SS] 2019-05-08 */ 
 }
 
 
@@ -2995,7 +3057,8 @@ char *num;
     p = p + 1;
     neg = -1;
   };
-  while (((int)*p >= '0') && ((int)*p <= '9')) {
+  /* [JA] 2021-05-25 */
+  while (((int)*p >= '0') && ((int)*p <= '9') && (t < (INT_MAX-9)/10)) {
     t = t * 10 + (int) *p - '0';
     p = p + 1;
   };
@@ -3011,10 +3074,15 @@ char **p;
   int t;
   
   t = 0;
-  while (((int)**p >= '0') && ((int)**p <= '9')) {
+  /* [JA] 2021-05-25 */
+  while (((int)**p >= '0') && ((int)**p <= '9') && (t < (INT_MAX-9)/10)) {
     t = t * 10 + (int) **p - '0';
     *p = *p + 1;
   };
+  /* advance over any spurious extra digits */
+  while (isdigit(**p)) {
+    *p = *p + 1;
+  }
   return t;
 }
 
@@ -3130,20 +3198,38 @@ int argc;
    midiprint = 1;
    }
 
-#ifdef SPLITCODE
+
   usesplits = 0;
-  arg = getarg("-splitbars",argc,argv);
-  if (arg != -1) 
-   usesplits = 1;
   arg = getarg("-splitvoices",argc,argv);
   if (arg != -1) 
    usesplits = 2;
-#endif 
 
   arg = getarg("-mftext",argc,argv);
   if (arg != -1) 
    {
    midiprint = 2;
+   timeunits = 2; /* [SS] 2018-10-25 */
+   }
+
+  arg = getarg("-mftextpulses",argc,argv);
+  if (arg != -1) 
+   {
+   midiprint = 2;
+   timeunits = 3; /* [SS] 2018-10-25 */
+   }
+
+
+
+  arg = getarg("-stats",argc,argv);
+  if (arg != -1)
+   {
+   printf("\nuse the new application midistats\n");
+   exit(1);
+   } 
+
+  arg = getarg("-d",argc,argv);
+  if ((arg != -1) && (arg <argc)) {
+   debug = readnum(argv[arg]);
    }
 
   arg = getarg("-a", argc, argv);
@@ -3271,16 +3357,28 @@ int argc;
     outhandle = stdout;
   };
   arg = getarg("-nt", argc, argv);
-  if (arg == -1) {
-    no_triplets = 0;
+  if (arg == -1) {  /* 2017-01-01 */
+    allow_triplets = 1;
   } 
   else {
-    no_triplets = 1;
+    allow_triplets = 0;
+  };
+  arg = getarg("-nb", argc, argv);
+  if (arg == -1) { /* 2017-01-01 */
+    allow_broken = 1;
+  } 
+  else {
+    allow_broken = 0;
   };
   arg = getarg("-nogr",argc,argv);
   if (arg != -1)
      nogr=1;
   else nogr = 0;
+
+  arg = getarg("-noly",argc,argv); /* [SS] 2019-07-12 */
+  if (arg != -1)
+     noly=1;
+  else noly = 0;
 
   arg = getarg("-title",argc,argv);
   if (arg != -1) {
@@ -3325,21 +3423,23 @@ int argc;
     printf("         -sr <number> Absorb short rests following note\n");
     printf("           where <number> specifies its size\n");
     printf("         -sum summary\n");
+    printf("         -nb Do not look for broken rhythms\n");
     printf("         -nt Do not look for triplets or broken rhythm\n");
     printf("         -bpl <number> of bars printed on one line\n");
     printf("         -bps <number> of bars to be printed on staff\n");
     printf("         -obpl One bar per line\n");
     printf("         -nogr No note grouping. Space between all notes\n");
-#ifdef SPLITCODE
-    printf("         -splitbars  splits bars to avoid nonhomophonic chords\n");
+    printf("         -noly Suppress lyric output\n");
     printf("         -splitvoices  splits voices to avoid nonhomophonic chords\n");
-#endif
     printf("         -title <string> Pastes title following\n");
     printf("         -origin <string> Adds O: field containing string\n");
     printf("         -midigram   Prints midigram instead of abc file\n");
-    printf("         -mftext mftext output\n"); 
+    printf("         -mftext mftext output in beats\n"); 
+    printf("         -mftextpulses mftext output in midi pulses\n"); 
+    printf("         -mftext mftext output in seconds\n"); 
     printf("         -ver version number\n");
-    printf(" None or only one of the options -gu, -b, -Q -u should\n");
+    printf("         -d <number> debug parameter\n");
+    printf(" None or only one of the options -aul -gu, -b, -Q -u should\n");
     printf(" be specified. If none are present, midi2abc will uses the\n");
     printf(" the PPQN information in the MIDI file header to determine\n");
     printf(" the suitable note length. This is the recommended method.\n");
@@ -3360,7 +3460,9 @@ int arg;
 int voiceno;
 int accidentals; /* used for printing summary */
 int j;
+int ten,ninety;
 int argc;
+
 
 /* initialization */
   trackno = 0;
@@ -3374,8 +3476,16 @@ int argc;
 
 /* parse MIDI file */
   mfread();
+  if (debug>0) printf("mfread finished: %d tracks read\n",trackcount);
 
   fclose(F);
+
+/* [SS] 2019-05-29 */
+/* run on all 16 tracks for midi file type 0 */
+if (trackcount == 1) {
+  if(debug >5)  listtrack_sizes();
+   trackcount = 16; 
+  }
 
 /* count MIDI tracks with notes */
   maintrack = 0;
@@ -3386,10 +3496,12 @@ int argc;
     fatal_error("MIDI file has no notes!");
   };
 
+
 /* compute dtnext for each note */
   for (j=0; j<trackcount; j++) {
     postprocess(j);
   };
+  if (debug>0) printf("postprocess run on all tracks\n");
 
   if (tsig_set == 1){  /* for -m parameter set up time signature*/
        header_asig = asig; 
@@ -3460,6 +3572,7 @@ int argc;
        setupkey(header_keysig);
 
 /* scannotes(maintrack); For debugging */
+  if(debug>0) printf("finished getting header parameters.\n");
 
 /* Convert each track to abc format and print */
   if (trackcount > 1) {
@@ -3467,27 +3580,31 @@ int argc;
     for (j=0; j<trackcount; j++) {
       freshline();
       if (track[j].notes > 0) {
+        if(debug > 0) printf("outputting track %d\n",j);
         fprintf(outhandle,"V:%d\n", voiceno);
 	if (track[j].drumtrack) fprintf(outhandle,"%%%%MIDI channel 10\n");
         voiceno = voiceno + 1;
-      };
-#ifdef SPLITCODE
-      if (usesplits==1) printtrack_with_splits(j, anacrusis); 
-      else if (usesplits==2) printtrack_split_voice(j, anacrusis);
+      pitch_percentiles(j,&ten,&ninety);
+      if (ten !=0) {
+         if(ten < 56 && ninety > 64 && ninety < 68) fprintf(outhandle,"%%%%clef bass\n");
+         if(ten < 56 && ninety > 67) fprintf(outhandle,"%%%%clef treble\n");
+          };
+
+      if (usesplits==2) printtrack_split_voice(j, anacrusis);
       else printtrack(j,anacrusis);
-#else
-      printtrack(j,anacrusis); 
-#endif
-    };
-  }
-  else {
-#ifdef SPLITCODE
-     if (usesplits==1) printtrack_with_splits(maintrack, anacrusis);
-     else if (usesplits==2) printtrack_split_voice(maintrack, anacrusis);
+      }; /*track[j].notes > 0 */
+    } /* for loop */
+
+   } else {  /* trackcount == 1 */
+      pitch_percentiles(maintrack,&ten,&ninety);
+      if (ten !=0) {
+         if(ten < 56 && ninety > 64 && ninety < 70) fprintf(outhandle,"%%%%clef bass\n");
+
+         if(ten < 56 && ninety > 69) fprintf(outhandle,"%%%%clef treble\n");
+	   
+      }
+     if (usesplits==2) printtrack_split_voice(maintrack, anacrusis);
      else printtrack(maintrack,anacrusis);
-#else
-     printtrack(maintrack, anacrusis);  
-#endif
   };
 
   /* scannotes(maintrack); for debugging */
@@ -3538,27 +3655,35 @@ void midigram(argc,argv)
 char *argv[];
 int argc;
 {
+int i;
+int verylasttick;
 initfunc_for_midinotes();
 init_notechan();
-last_tick=0;
+for (i=0;i<17;i++) {last_tick[i]=0;}
 /*F = efopen(argv[argc -1],"rb");*/
 Mf_getc = filegetc;
 mfread();
-printf("%d\n",last_tick);
+verylasttick = 0;
+for (i=0;i<17;i++) {
+  if(verylasttick < last_tick[i]) verylasttick = last_tick[i];
+  }
+printf("%d\n",verylasttick);
 }
 
 void mftext(argc,argv)
 char *argv[];
 int argc;
 {
+int i;
 initfunc_for_mftext();
 init_notechan();
-last_tick=0;
+for (i=0;i<17;i++) {last_tick[i]=0;}
 /*F = efopen(argv[argc -1],"rb");*/
 Mf_getc = filegetc;
 mfread();
 /*printf("%d\n",last_tick);*/
 }
+
 
 
 int main(argc,argv)
@@ -3569,8 +3694,8 @@ int argc;
   int arg;
 
   arg = process_command_line_arguments(argc,argv);
-  if(midiprint ==1) midigram(argc,argv);
-  else if(midiprint ==2) mftext(argc,argv);
-  else midi2abc(argc,argv); 
+  if(midiprint ==1) { midigram(argc,argv);
+  } else if(midiprint ==2)  { mftext(argc,argv);
+  } else midi2abc(argc,argv); 
   return 0;
 }

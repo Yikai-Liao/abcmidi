@@ -8,11 +8,28 @@ ABC2ABC,
 YAPS,
 ABCMATCH} programname;
 
+typedef enum {
+  TIMESIG_NORMAL,
+  TIMESIG_FREE_METER,
+  TIMESIG_COMMON,
+  TIMESIG_CUT,
+  TIMESIG_COMPLEX
+} timesig_type_t;
+
+typedef struct timesig_details {
+  timesig_type_t type;
+  int num;
+  int denom;
+  int complex_values[8];
+  int num_values;
+} timesig_details_t;
+
 /* define types of abc object */
 typedef enum {
 /* types of bar sign */
 SINGLE_BAR,
 DOUBLE_BAR,
+DOTTED_BAR,
 BAR_REP,
 REP_BAR,
 PLAY_ON_REP,
@@ -74,6 +91,7 @@ MUSICLINE,
 MUSICSTOP,
 WORDLINE,
 WORDSTOP,
+WORDEXTEND,
 INSTRUCTION,
 NOBEAM,
 CHORDNOTE,
@@ -94,7 +112,7 @@ EFFECT
 } featuretype;
 
 /* note decorations */
-#define DECSIZE 10
+#define DECSIZE 13
 extern char decorations[];
 #define STACCATO 0
 #define TENUTO 1
@@ -106,6 +124,9 @@ extern char decorations[];
 #define BOWUP 7
 #define BOWDOWN 8
 #define BREATH 9
+#define CODA 10 
+#define UPPERMORDENT 11
+#define SEGNO 12
 
 /* The vstring routines provide a simple way to handle */
 /* arbitrary length strings */

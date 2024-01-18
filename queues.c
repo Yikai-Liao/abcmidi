@@ -95,6 +95,8 @@ int effect; /* [SS] 2012-12-11 */
   int wait;
   int *ptr;
 
+  /*printf("addtoQ: %d %d %d %d %d\n",num,denom,pitch,chan,d); */
+
   wait = ((div_factor*num)/denom) + d;
   /* find free space */
   if (freehead == -1) {
@@ -456,7 +458,8 @@ void note_effect5(chan)
        to the MIDI file.
     */
     struct eventstruc eventlist[1024]; /* extended to 1000 2015-10-03 */
-    int delta,notetime,pitchbend;  
+    int delta=0,notetime,pitchbend; /* [SDG] 2020-06-03 */ 
+    int last_delta; /* [SS] 2017-06-10 */
     int initial_bend; /* [SS] 2015-08-25 */
     int i,j;
     int layer;
@@ -523,12 +526,13 @@ void note_effect5(chan)
     /* [SS] 2015-08-23 */
     if (j > 1) {
         qsort(eventlist,j,sizeof(struct eventstruc),int_compare_events);
-   /* print_eventlist(eventlist,j); */
+    /*print_eventlist(eventlist,j); */
         }
     output_eventlist(eventlist,j,chan);
 
     /* [SS] 2015-08-28 */
-    midi_noteoff(delta, Q[Qhead].pitch, Q[Qhead].chan);
+    last_delta = delta - eventlist[j-1].time; /* [SS] 2017-06-10 */
+    midi_noteoff(last_delta, Q[Qhead].pitch, Q[Qhead].chan);
 
     for (layer=0;layer <= nlayers;layer++) {
         controltype = controldata[layer][0];

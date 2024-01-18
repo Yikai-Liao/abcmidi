@@ -1,23 +1,23 @@
 abcMIDI :   abc <-> MIDI conversion utilities
 
-midi2abc version 2.99 October  18 2015
-abc2midi version 3.88 February  08 2015
-abc2abc  version 1.86 May 05 2016
-yaps     version 1.63 November 15 2015
-abcmatch version 1.70 November 15 2015
-midicopy version 1.22 November 15 2015
+midi2abc version 3.59 February 08 2023
+abc2midi version 4.85 December 23 2023
+abc2abc  version 2.20 February 07 2023
+yaps     version 1.92 January 06 2023
+abcmatch version 1.82 June 14 2022
+midicopy version 1.39 November 08 2022
+midistats version 0.85 January 04 2024
 
 24th January 2002
-
 Copyright James Allwright
-J.R.Allwright@westminster.ac.uk
+jamesallwright@yahoo.co.uk
 University of Westminster,
 London, UK
 
-January 2016
-
-Seymour Shlien
+August 2023
+Copyright Seymour Shlien
 fy733@ncf.ca
+Ottawa, Canada
 
 This is free software. You may copy and re-distribute it under the terms of 
 the GNU General Public License version 2 or later, which is available from
@@ -27,14 +27,14 @@ This package is to be found on the web at
 
 http://abc.sourceforge.net/abcMIDI/
 (The latest versions for the time being is found on
- ifdo.pugmarks.com/~seymour/runabc/top.html.)
+ ifdo.ca/~seymour/runabc/top.html.)
 
 Note, if you have difficulty compiling the package because you do not have
 snprintf see the note in doc/CHANGES dated January 08 2005 (and also
 December 17 2004).
 
 These programs make use of the 'midifilelib' public domain MIDI file utilities,
-available from
+which was originally available from
 
 http://www.harmony-central.com/MIDI/midifilelib.tar.gz
 
@@ -120,6 +120,9 @@ midi2abc <options>
                 the midi commands (mftext like output) is
                 produced. The output is best viewed with
                 runabc.tcl
+         -stats prints summary and statistics of the midi file
+                which would be best viewed using an new application
+                midiexplorer.tcl.
          -ver   Prints version number and exits
 
 Use only one of -u -gu -b and -Q or better none.
@@ -343,12 +346,15 @@ Usage: abc2abc <filename> [-s] [-n X] [-b] [-r] [-e] [-t X]
   -nokeys No key signature (i.e. K: none). Use sharps.
   -nokeyf No key signature (i.e. K: none). Use flats.
   -u to update notation ([] for chords and () for slurs)
+  -usekey n Use key signature sf (sharps/flats)
+  -useclef (treble or bass)
   -d to notate with doubled note lengths
   -v to notate with halved note lengths
   -V X[,Y...] to output only voice X,Y...
   -P X[,Y...] restricts action to voice X,Y... leaving other voices intact
   -ver prints version number and exits
   -X n renumber the all X: fields as n, n+1, ..
+  -xref n output only the tune with X reference number n.
   -usekey sf Use key signature sf (flats/sharps)
   -OCC old chord convention (eg. +CE+)
 
@@ -415,15 +421,36 @@ midicopy <options> input.mid output.mid
 midicopy copies selected tracks, channels, time interval of the input midi file.options:
 -ver  version information
 -trks n1,n2,..(starting from 1)
+-xtrks n1,n2,... (tracks to exclude)
+-xchns n1,n2,... (channels to exclude)
 -chns n1,n2,..(starting from 1)
 -from n (in midi ticks)
 -to n   (in midi ticks)
+-fromsec %f (in seconds)
+-tosec %f (in seconds)
+-frombeat %f
+-tobeat %f
 -replace trk,loc,val
+-tempo n (in quarter notes/min)
+-speed %f (between 0.1 and 10.0)
+-drumfocus n (35 - 81) m (0 - 127)
+-mutenodrum [level] 
+-setdrumloudness n (35-81) m (0 -127)
+-focusontrack n1,n2,... 
+-focusonchannel n1,n2,...
+-attenuation n
+-nobends
+-indrums n1,n2,... (drums to include)
+-xdrums n1,n2,... (drums to exclude)
+-onlydrums (only channel 10)
+-nodrums (exlcude channel 10)
+-zerochannels  set all channel numbers to zero
+
 
 midicopy.exe -ver
 
 will print out something like 
-1.00 July 11 2004
+1.29 December 06 2017
 
 
 midicopy.exe input.mid output.mid
@@ -441,11 +468,9 @@ pulse number are also copied.
 
 If you include the -to command followed by a midi  pulse number, the
 midi file is truncated beyond that point, so that when you play the file
-it will stop at this point.
-
-If you have selected a time interval using the -from or -to parameters
-(or both), then the program will print out the estimated duration of
-the output midi file.
+it will stop at this point. You can also specify the window using beats
+with the options -frombeats and -tobeats. The program will print out
+the estimated duration of the output midi file.
 
 All the tracks will be copied unless you specify them in the list following
 keyword -trks. You start counting tracks from 1.
@@ -453,12 +478,34 @@ keyword -trks. You start counting tracks from 1.
 Similarly, all channels will be copied unless you specify them following
 keyword -chns. You start counting channels from 1.
 
+The -xchns and -xtrk options will exclude the indicated channels or
+tracks from the output midi file. The -xchns does not work together
+with -chns and neither does -xtrks work with -trks. (Use one or the
+other.)
+
 The option -replace allows you to overwrite a specific byte given its
 track number and offset loc, by the byte whose value is val. This is
 used for changing the program number associated with a channel. The byte
 is replaced in the output file. If you use the -replace option, all
 other options like -from, -to, -chns etc. are ignored.
 
+The embedded tempo commands can be replaced using
+-tempo n
+in units beats/minute.
+
+-speed f
+where f is a decimal number between 0.1 and 10.0 will multiply
+the current tempo by this factor.
+
+-drumfocus will accentuate the specified drum (35 to 81) to level
+m (0 to 127).
+
+-focusontracks will attenuate all tracks except those specified.
+
+-focusonchannels will attenuate all channels except those specified.
+
+-attenuation specifies the amount to reduce the note velocities
+for the focus options.
 
 -------------------------------------------------------------------------
 abcmatch.exe  - see abcmatch.txt

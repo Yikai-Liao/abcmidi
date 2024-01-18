@@ -591,6 +591,11 @@ void event_linebreak()
   addfeature(LINENUM, lineno, 0, 0);
 }
 
+/* a score linebreak character has been encountered */
+void event_score_linebreak(char ch)
+{
+}
+
 void event_startmusicline()
 /* starting to parse line of abc music */
 {
@@ -660,9 +665,11 @@ char *f;
   };
 }
 
-void event_words(p, continuation)
+/* [JA] 2022.06.14 */
+void event_words(p, append, continuation)
 /* handles a w: field in the abc */
 char* p;
+int append;
 int continuation;
 {
 }
@@ -758,6 +765,9 @@ struct voice_params *vp;
     if (pastheader)  checkbreak();
     v = getvoicecontext(n);
     addfeature(VOICE, v->indexno, 0, 0);
+    if (vp->gotclef) {
+      event_octave(vp->new_clef.octave_offset, 1);
+    }
     if (vp->gotoctave) {
       event_octave(vp->octave,1);
     };
@@ -782,6 +792,12 @@ int n;
   };
 }
 
+void event_default_length (n)
+/* handles a missing L: field in the abc */
+     int n;
+{
+}
+
 static void tempounits(t_num, t_denom)
 /* interprets Q: once default length is known */
 int *t_num, *t_denom;
@@ -798,19 +814,25 @@ char *post;
 {
 }
 
-
-void event_timesig(n, m, dochecking)
+void event_timesig (timesig)
 /* handles an M: field  M:n/m */
-int n, m, dochecking;
+  timesig_details_t *timesig;
 {
+  int dobarchecks;
+
+  if (timesig->type == TIMESIG_FREE_METER) {
+    dobarchecks = 0;
+  } else {
+    dobarchecks = 1;
+  }
   if (dotune) {
     if (pastheader) {
-      addfeature(TIME, dochecking, n, m);
-   } else { 
-      time_num = n;
-      time_denom = m;
+      addfeature (TIME, dobarchecks, timesig->num, timesig->denom);
+    } else {
+      time_num = timesig->num;
+      time_denom = timesig->denom;
       timesigset = 1;
-      barchecking = dochecking;
+      barchecking = dobarchecks;
     };
   };
 }
@@ -819,6 +841,7 @@ void event_octave(num, local)
 /* used internally by other routines when octave=N is encountered */
 /* in I: or K: fields */
 int num;
+int local;
 {
   if (dotune) {
     if (pastheader || local) {
@@ -1064,6 +1087,9 @@ void event_chord()
   };
 }
 
+void event_ignore () { };  /* [SS] 2018-12-21 */
+
+
 static void lenmul(n, a, b)
 /* multiply note length by a/b */
 int n, a, b;
@@ -1097,6 +1123,8 @@ static void brokenadjust()
       num1 = 15;
       num2 = 1;
       break;
+    default:
+      num1=num2=1; /* [SDG] 2020-06-03 */
   };
   denom12 = (num1 + num2)/2;
   if (v->brokentype == LT) {
@@ -1214,10 +1242,11 @@ int decorators[DECSIZE];
   };
 }
 
-void event_mrest(n,m)
+void event_mrest(n,m,c)
 /* multiple bar rest of n/m in the abc */
 /* we check for m == 1 in the parser */
 int n, m;
+char c; /* [SS] 2017-04-19 to distinguish X from Z in abc2abc */
 {
   int i;
   int decorators[DECSIZE];
@@ -1337,11 +1366,13 @@ int num, denom;
 }
 
 
-void event_note(decorators, accidental, mult, note, xoctave, n, m)
+void event_note(decorators, clef, accidental, mult, note, xoctave, n, m)
 /* handles a note in the abc */
 int decorators[DECSIZE];
+cleftype_t *clef;
+char accidental;
 int mult;
-char accidental, note;
+char note;
 int xoctave, n, m;
 {
   int pitch;
@@ -1400,6 +1431,10 @@ int xoctave, n, m;
 void event_microtone(int dir, int a, int b)
 {
 }
+
+void event_temperament(char *line) {
+}
+
 
 void event_normal_tone()
 {
@@ -1646,7 +1681,7 @@ static void tiefix()
 {
   int j;
   int inchord;
-  int chord_num, chord_denom;
+  int chord_num=-1, chord_denom=1; /*[SDG] 2020-06-03 */
   int chord_start,chord_end;
   int voiceno;
 
@@ -1842,19 +1877,21 @@ static void headerprocess()
   voicesused = 0;
 }
 
-void event_key(sharps, s, modeindex, modmap, modmul, modmicrotone, gotkey, gotclef, clefname,
+void event_key(sharps, s, modeindex, modmap, modmul, modmicrotone,
+          gotkey, gotclef, clefname, clef,
           octave, transpose, gotoctave, gottranspose, explict)
 /* handles a K: field */
 int sharps; /* sharps is number of sharps in key signature */
-int modeindex; /* 0 major, 1,2,3 minor, 4 locrian, etc.  */
 char *s; /* original string following K: */
+int modeindex; /* 0 major, 1,2,3 minor, 4 locrian, etc.  */
 char modmap[7]; /* array of accidentals to be applied */
 int  modmul[7]; /* array giving multiplicity of each accent (1 or 2) */
 struct fraction modmicrotone[7]; /* [SS] 2014-01-06 */
 int gotkey, gotclef;
+char* clefname;
+cleftype_t *clef;  /* [JA] 2020-10-19 */
 int octave, transpose, gotoctave, gottranspose;
 int explict;
-char* clefname;
 {
   int minor;
   strncpy(keysignature,s,16);
@@ -1881,6 +1918,9 @@ char* clefname;
       v = newvoice(1);
       head = v;
     };
+    if (gotclef) {
+      event_octave(clef->octave_offset, 0);
+    }
     if (gotoctave) {
       event_octave(octave,0);
     };
@@ -2008,7 +2048,8 @@ for (i=from;i<=to;i++)
   {
   j = feature[i];
   if (j<0 || j>73) printf("illegal feature[%d] = %d\n",i,j); /* [SS] 2012-11-25 */
-  else printf("%d %s   %d %d %d %d \n",i,featname[j],pitch[i],num[i],denom[i]);
+  else printf("%d %s   %d %d %d \n",i,featname[j],pitch[i],num[i],denom[i]);
+  /* [SDG] 2020-06-03 removed extra %d */
   }
 }
 

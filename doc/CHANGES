@@ -865,7 +865,7 @@ it was invoked. (4) In the function txt_keysig(), the verbose
 message sent to the tlistx structure was replaced with just
 the sf and mi (number of sharps/flats and major/minor flag).
 (5) In the function txt_timesig(), The verbose message was
-replaced with just the key signature nn/denom. (6) Major
+replaced with just the time signature nn/denom. (6) Major
 additions were made to the function handletext() which now
 does more than just print text at the appropriate place.
 If the text string is a key signature or time signature as
@@ -12044,7 +12044,7 @@ K: G
 A3/2 B/ A/ B3/2|A>B A<B|
 
 Thus for the above example, both bars will now sound the same unless
-abc2midi is run with the -RS option. The command
+abc2midi is run with the -CS option. The command
 %%MIDI ratio 2 1
 still works as before.
 
@@ -12147,5 +12147,3063 @@ code was eliminated and a new function transpose_note()
 was introduced. The new function borrowed the transposition
 code from event_note, so that key modifiers were transposed
 the same way the notes in the music body are modified.
+
+
+July 20 2016
+
+Midi2abc: note grouping for 3/4 time is incorrect.
+For 3/4 meter midi2abc groups the notes as EFG AGF instead
+of EF GA GF in a bar.
+
+Fix: in printtrack_with_splits(), printtrack_split_voice(),
+and printtrack(), also check for waltz time (asig == 3)
+before grouping notes as compound rhythm.
+
+
+September 20 2016 and September 25 2016
+
+Abc2midi: only handles user defined symbols between 'H' and 'Z'.
+
+Fix: allow user defined symbols between 'A' and 'z'. Also applies
+to abc2abc and yaps. Parseabc.c was upgraded.
+
+
+January 01 2017
+
+Midi2abc: There are times when you may wish to suppress broken
+rhythms but still allow triplets. For example,
+
+X:1
+T:A Tune For Paddy: A Pint Of Guiness And One For The Goat
+M:6/8
+K:Emin
+edB AGF | GEE E3 |
+edB AGF | GEE E3 |
+
+Applying abc2midi and midi2abc results in the second and
+forth bar appearing as GEE2<E2 which is not desired.
+
+New feature -nt now suppresses only triplets. To suppress
+broken rhythms like C>D you need to use -nb. 
+
+
+February 01 2017
+
+abc2midi: %%MIDI gchordbars bug. The gchordbars factor does
+not start working until after the first bar. For the following example,
+
+X:1
+T: gchordbars
+M: 6/8
+L: 1/8
+K: C
+%%MIDI gchordbars 2
+%%MIDI gchord fffhhh
+"G" G6|D6|G6|D6|G6|D6|
+
+The gchord accompaniment is not expanded until after the first
+bar.
+
+Analysis: The variable gchordbarcount needs to be reset to 0  after
+each call to set_gchords(). checkbars() will set gchordbarcount to
+gchordbars if it is 0. Simarly drumbarcount should also be reset
+after each call to set_drums(). The code is still temperamental,
+so ensure that the MIDI gchordbars statement occurs prior to the
+MIDI gchord declaration and precedes the bar line where it will
+be applied.
+
+
+April 10 2017
+
+Abc2midi bug: abc2midi fails to create a midi file for
+
+X:1
+T: Microtone
+M: 4/4
+L: 1/4
+K: G staffscale =1.2
+G F G =F|
+
+staffscale = is a specification for abcm2ps which is not
+recognized by abc2midi. parsekey is attempting to treat
+=1.2 as a specification of a microtone in the key signature.
+sscanf() returns only one parameter instead of 3.
+
+if (j > 7) j = (int) c - 'a';
+if (j > 7 || j < 0) {printf("invalid j = %d\n",j); exit(-1);}
+
+j is not a valid value because the variable c is 0.
+
+
+
+Fix: changed
+
+success = sscanf (&word[1], "%d/%d%c", &a, &b, &c);
+          if (success > 0)
+
+to
+
+success = sscanf (&word[1], "%d/%d%c", &a, &b, &c);
+          if (success == 3)
+
+
+
+April 12 2017
+
+Abc2midi,Abc2abc,Yaps new feature: Abcm2ps has many features
+for creating a nice document. Abc2midi and other programs in
+the abcmidi package may get confused when it sees certain lines.
+I have introduced two new commands
+
+%%MidiOff
+and
+%%MidiOn
+
+which tell abc2midi and other programs to not parse the lines
+in between.
+
+For example:
+
+X:1
+T: Booth Shot Lincoln
+C: Traditional
+C: Arr. Pete Showman
+R: Reel
+Q: 1/2=90
+M: 2/2
+L: 1/8
+K:A
+|| y20 "A"ce2c e2ee | "D"fa2f a2fe- | \
+"A"eBcB AcBA | "D"F3F F2FF |
+%%MidiOff
+%%begintext
+ The next lines will not be played
+%%endtext
+%%MidiOn
+
+The commands %%MidiOff and %%MidiOn, delineate a block
+of text that we do not want the parser to process. Otherwise,
+all the e's, b, a and d in the line "The next lines..."
+be treated as notes to be played in the output midi file.
+
+
+Implementation:
+Introduced a new global in parseabc.c, int ignore_line, which
+is either 0 or 1. When it is set to 1, parseline() in parseabc.c
+will ignore that line. ignore_line is automatically initialized
+to 0 any time a new X: command is encountered.
+
+
+April 16 2017
+
+Fixed a bug I introduced in parseabc.c on April 12 2017.
+
+Had changed
+parse_precomment (s)
+     char *s;
+
+to
+
+parse_precomment (s)
+     char **s;
+
+in order to eliminate a compiler warning; however,
+this caused abc2midi to treat %%MIDI as a text comment.
+
+
+April 19 2017
+
+Abc2abc invisible rest bug: the invisible multirest X gets
+transposed to Z. When transposing the following tune,
+
+X:1
+T: Invisible rests
+M: 4/4
+L: 1/4
+K: G
+ABcx|X2|
+
+X is changed to Z
+
+Analysis: parsemusic() in parseabc.c treats the multirests
+X and Z the same way in event_mrest().
+
+Fix: added a char parameter to event_mrest() so it knows
+whether it is a X or a Z. This effects store.c, toabc.c,
+yapstree.c and matchsup.c.
+
+
+
+June 02 2017
+
+Abc2midi: Some of the documentation which comes with abc2midi
+states that the MIDI program number should range between 1 and 128;
+however, as far back as 2003, abc2midi expects the range to be
+between 0 and 127 following the MIDI standard. The documentation
+abcguide.txt and the man page abc2midi.1 have been corrected.
+Unfortunately, the Abc standard was based on the old documentation.
+It is too late to change abc2midi to comply with the abc standard
+since there are too many abc existing files using the current
+convention. As a temporary compromise, I have added a new
+command %%MIDI programbase.
+
+The current default is (so you do not need this line).
+%%MIDI programbase 0
+
+To change to the abc standard use
+%%MIDI programbase 1
+
+Implementation: added global 
+int programbase = 0;
+to store.s which can be modified by the %%MIDI programbase command.
+
+Genmidi.c links to programbase using an extern statement and
+in the function write_program() I added the lines.
+ p = p - programbase; /* [SS] 2017-06-02 */
+ if (p <0) p = 0; /* [SS] 2017-06-02 */
+
+Test file:
+
+%%MIDI programbase 1
+X:1
+T: timpani
+% The timpani has MIDI program number 47 if you count from 0
+% or 48 if you count from 1.
+M: 2/4
+L: 1/8
+K: C
+%%MIDI program 48
+CCDD|EEFF|CDEF|CDEF|
+
+
+June 10 2017
+
+Abcmidi: !shape! bug
+
+In the following example:
+
+X: 1
+%%MIDIdef peta bendstring 0 0     900 900 0  -900 -900 0  -400
+%%MIDIdef volon125 controlstring 11 125
+T: shape bug
+C: 1
+M: 4/4
+L: 1/4
+Q:1/4=130
+K: C
+%%MIDI program 64
+AGGF|\
+[I: MIDIx= peta]!bend!F[I: MIDIx=volon125]!shape!GAB|
+
+The note G in the second bar following !shape! is held
+too long.
+
+Analysis: note_effect5 ends a note with
+   midi_noteoff(delta, Q[Qhead].pitch, Q[Qhead].chan);
+however the delta does not account of the numerous pitchbend 
+commands which has shifted the time base to the end of the
+note.
+
+Fix: computed  last_delta = delta - eventlist[j-1].time; /* [SS] 2017-06-10 */
+and used that to end the note.
+midi_noteoff(last_delta, Q[Qhead].pitch, Q[Qhead].chan);
+
+
+July 10 2017
+
+Abc2abc: new feature
+
+Added runtime reference -xref n which will only output the tune
+with reference number n.
+
+Implementation: in toabc.c add global integer xmatch which is set
+to n when the -xref parameter is found. Otherwise it is set to
+-1. The function event_refno(n) turns the parser on or off.
+We needed to add 'extern parsing' in order to handle blank lines
+in event_blankline(). All % abcm2ps directives unfortunately
+must be printed since they may not be embedded in the particular
+tune.
+
+
+July 11 2017
+
+Abc2midi infinite loop. The following tune causes abc2midi to
+become unresponsive and go into an infinite loop.
+
+X:1
+T: abc2midi infinite loop
+P:A-B
+M: 4/4
+L: 1/4
+K:C
+P:A
+DDDD|
+P:B
+EEEE|
+
+The loop occurs in the function read_spec() in store.c
+which processes the line P:A-B. Fix: added a line
+to increment the character pointer when it encounters the
+character - or +.
+
+
+August 9 2017 - September 19 2017
+
+Midi2abc - added new option (-stats) to gather and print statistics
+of a midifile. (eg. number of notes for a particular channel
+in a particular track). This will be used by a new application
+called midiexplorer. (The output is not documented and it is
+work in progress.)
+
+
+August 30 2017
+
+Midi2abc - The metatext string is not terminated with a 0 and
+as a result can contain random junk, in particular on the Windows
+operating system. Fix in midifile.c, the Msgbuff is initialized to
+0 when it is allocated.
+
+September 12 2017
+
+Midicopy - two fixes to cover some unusual situations.
+
+September 18 2017
+
+Midicopy - another fix
+
+
+October 9 2017
+Abc2abc bug: the program crashes when it tries to parse the line
+
+V: V1 clef=treble2 middle=B nm="" snm="" merge stem=auto gstem=auto dyn=auto lyrics=auto gchord=auto scale=1 staffscale=1 stafflines=5 
+
+Fix: the buffer output[32] was expanded to output[128] to handle long
+lines in event_voice in toabc.c
+
+
+October 11 2017
+
+Abc2abc bug:
+
+V: V1 clef=treble2 middle=B nm="" snm="" merge stem=auto gstem=auto dyn=auto lyrics=auto gchord=auto scale=1 staffscale=1 stafflines=5 
+
+parameters chopped short. Fix: in parseabc.h increased V_STRLEN to 256.
+Probably effects abc2midi too.
+
+
+October 18 2017
+
+Abc2midi: the complex guitar chords which extend over one octave, were
+converted from closed form to open form in store.c. For example:
+ /* static int list_11[6] = {0, 4, 7, 10, 2, 5}; */
+    static int list_11[6] = {0, 4, 7, 10, 14, 17};
+
+
+October 22 2017
+
+Midicopy: cleaned up the code somewhat. Midicopy no longer outputs
+tracks that are not needed.
+
+
+October 23 2017
+abc2midi and yaps: The parser normally reports a warning
+Potentially ambiguous line - either a :| repeat or a field command -- cannot distinguish.
+when it sees a line like
+A:|cdef|A4|
+or
+B:|cdef|A4|
+(The A: or B: could be interpreted as field commands.) By default the
+line is treated as a music line, and in most cases everything works fine.
+However, for a line like
+w:| A____le-lu-ia | A____le-lu-ia a-le-lu-|
+we would prefer that it is treated as a w: command or lyric line.
+
+Fix: parseabc.c was modified to make a special exception for the
+w: line and call preparse_words().
+
+
+November 01 2017 November 08 2017 November 10 2017 November 19 2017
+
+Midi2abc: minor enhancement for -stats function.
+
+
+November 27 2017
+Midicopy: introducing new options -focusontracks n1,n2,... and
+-focusonchannel n1,n2....  This attenuates the velocity values of the
+notes in all tracks (channels) except except n1,n2,... by the 
+attenuation (default 70) units. The attenuation can be specified
+by -attenuation n.
+
+December 06 2017
+Midicopy: added an option -xchns to exclude specific channels.
+
+
+December 10 2017
+Abc2midi: abc2midi now implements the command
+%%abc-include per.abc
+where per.abc is typically a header file which defines various
+global parameters. For example, the file could remap the channel
+pitches to particular percussion instruments using the %%MIDI drummap
+command.
+
+Implementation: in genmidi.c the function parse_drummap() is no longer
+static so it can be called in store.c. In store.c, the command
+%%MIDI drummap is recoginized in the function event_specific_in_header().
+The function init_drummap, is no longer activated in the function
+finishfile(), but only once in the main() function. This means that,
+the %%MIDI drummap command will apply to all the tunes in the file,
+irrespective of whether it is in the header (global) area. Finally,
+parsefile() in parseabc.c has been extended to recognize the
+abc-include file. All the contents of this include file are parsed
+as if the lines were included in the open abc file, except that the
+line counters do not count the lines in the include file. The
+extension to parseabc.c also impacts abc2abc, yaps, and abcmatch.
+
+December 15 2017
+Midicopy: added -nobends option.
+
+
+December 20 2017
+Midi2abc bug: When midi2abc.c is compiled without the debugger on
+Debian Linux, it fails with the message
+**buffer overflow**
+On compilation there are frequent warnings:
+n function 'strncpy',
+    inlined from 'setupkey' at midi2abc.c:3209:3:
+/usr/include/x86_64-linux-gnu/bits/string3.h:126:10: warning: call to __builtin___strncpy_chk will always overflow destination buffer
+   return __builtin___strncpy_chk (__dest, __src, __len, __bos (__dest));
+ 
+Analysis: strncpy was attempting to copy 16 characters from a 12 character
+string into a 12 character string.
+
+Fix: changed strncpy to memcpy and limited the copy to 12 characters.
+
+
+January 02 2018 January 24 2018 February 07 2018 February 22 2018
+  March 06 2018
+Midi2abc -stats (detecting key signature and time signature meta commands)
+Midi2abc -stats returns pitchentropy
+Midi2abc -stats returns drumhits, progs, progsact
+Midi2abc -stats check for program number between 0 and 127
+
+
+February 22 2018
+
+Abc2abc does not handle correctly the %%MidiIOff and %%MidiOn
+which was introduced on April 12 2017 as seen below.
+X:1
+T:Booth Shot Lincoln
+C:Traditional
+C:Arr. Pete Showman
+R:Reel
+Q:1/2=90
+M:2/2
+L:1/8
+K:A
+|| y20 "A"ce2c e2ee | "D"fa2f a2fe- | \
+"A"eBcB AcBA | "D"F3F F2FF |
+ignore_line = 1
+
+
+
+
+ignore_line = 0
+%%MidiOn
+
+Janus Meuris (jmeuris@gmail.com) has contributed several fixes and
+minor improvements to parseabc.c, toabc.c and store.c.
+
+In parseabc.c, the printf("ignore_line ...") was removed from
+handle_abc2midi_parser(). The error message "Single colon in bar"
+was removed since it is perfectly legal in music notation.
+In parseline() flushes out the blocked lines enclosed by MidiOff and
+MidiOn in the case that abc2abc is running.
+
+The abc2abc output now looks like:
+X:1
+T:Booth Shot Lincoln
+C:Traditional
+C:Arr. Pete Showman
+R:Reel
+Q:1/2=90
+M:2/2
+L:1/8
+K:A
+|| y20 "A"ce2c e2ee | "D"fa2f a2fe- | \
+"A"eBcB AcBA | "D"F3F F2FF |
+%%MidiOff
+%%begintext
+ The next lines will not be played
+%%endtext
+%%MidiOn
+
+
+In toabc.c, in printlen(a, b) , an option to print a/2 and a/4 as
+a/ and a// was introduced. 
+
+In store.c, more warnings were suppressed. A guitar chord beginning
+with a space is also ignored -- eg. " A major"
+
+
+March 08 2018
+abc2abc bug: abc2abc deletes the leading space in the string following
+the w: field command. For example
+
+X:1
+T:foo
+M:4/4
+L:1/4
+K:C
+c d e f | c d e f |
+w: | he-llo wor-ld |
+
+There is a space following w: to prevent parseline from seeing :|.
+Unfortunately, abc2abc produces
+w:| he-llo wor-ld |
+which poses a problem to abc2midi.
+
+abc2midi out.abc
+4.02 February 22 2017 abc2midi
+Warning in line-char 7-18 : Potentially ambiguous line - either a :| repeat or a field command -- cannot distinguish.
+
+Analysis: the leading blank was already removed by parseline() in parseabc.c
+by the time that preparse_words() sees the text.  Rather than messing
+around with parseabc.c, I modified event_field() in toabc.c so that it will
+automatically place a space between : and | whether or not it is missing.
+
+
+March 21 2018
+abc2midi bug: The only the A part is rendered by abc2midi and
+there is no error message.
+
+X:1
+T: parts
+M: 6/8
+L: 1/8
+P: A BB CC
+K: G
+P:A
+DCB BAG|
+P:B
+GGB CBG|
+P:C
+GF2 G3|
+
+Analysis: the P: command should be written as ABBCC without the spaces.
+When this is done, the tune is rendered correctly. The code for deciphering
+the P: command (read_spec() in store.c)  has been unmodified
+since I have taken over the support of abc2midi. For some reason,
+the P: specification allows the user to use a dot '.' to control
+the spacing of the command; so A.BB.CC would be legal; however,
+the use of spaces causes the command to fail.
+
+The P: command has served two purposes in the past. When the abc
+notated tune is rendered to sheet music, the P: command has also
+been used to label the different sections of the tune. As a result,
+if the P: command does not follow the exact syntax, abc2midi assumes
+it is not being used for controlling repeats and ignores the command.
+When P: is used for controlling repeats only the characters A-Z,
+0-9,-,+,(,), and . are allowed. If a different character, say lower
+case letters are encountered, read_spec() immediately ignores the
+rest of the specification without any error message.
+
+Fix: the code read_spec() was upgraded so that it now reports
+an error in the event that the P: command in the header does not
+follow the correct syntax. This can lead to a lot of error messages
+if the P: command was used for adding comments to the title.
+Fortunately, the user can use the -silent option to suppress these
+messages. Furthermore, if read_spec encounters this error, it
+restores the state of abc2midi so that all the parts are still
+played (in the same order that they are presented and with no repeats).
+
+Finally, I do not see any reason why read_spec() should fail when
+it encounters spaces, so I have modified the code so that spaces
+can be used to improve the clarity of the command.
+
+
+April 01 2018
+
+abc2midi reports an error when it encounters a within body I: which
+does not contain one of the keys octave, MIDI, MIDIx, vol, or volinc.
+For example, for the file
+
+X: 1
+T: Test 2 - I:leftmargin, I:rightmargin
+T: abcm2ps sets the page margins
+L: 1/4
+M: 4/4
+K: C
+%
+I:leftmargin 3cm
+I:rightmargin 3cm
+CCCC|DDDD|EEEE|FFFF|GGGG|
+
+abc2midi normally returns:
+Error in line-char 8-0 : I: key ' leftmargin' not recognized
+Error in line-char 9-0 : I: key ' rightmargin' not recognized
+writing MIDI file test21.mid
+
+The error messages can now be suppressed by running abc2midi with
+either the -quiet or -silent run time option.
+
+
+April 14 2018
+
+abc2midi bug: the following file
+
+X:1
+%%MIDI ptstress 3 100 1.5 100 0.75 100 0.75
+T: Barfly stress test
+L:1/4
+M:3/4
+K:C
+gGg | GgG | gGg | GgG | gGg | GgG 
+
+does not apply the Barfly stress model when abc2midi
+is called with the -BF option, but it works correctly
+when the -BF option is not included in the runtime parameters.
+This can be a confusing issue when abc2midi is called from
+a user interface such as EasyAbc.
+
+Analysis: when the -BF option is included, abc2midi is looking
+for a R: designator and attempts to match the rhythm designation
+with one of the rhythms in the library. If it fails then the
+stress model is turned off despite the fact that the stress
+pattern has been specified explicitly by a %%MIDI ptstress command.
+
+Fix: parse_stress_model (in genmidi.c) is called when a
+%%MIDI ptstress command is encountered. If the command is valid, 
+parse_stress_model sets beatmodel to 2 enabling the Barfly
+stress model.
+
+April 15 2018
+
+abc2midi bug:
+
+If the -BF runtime parameter is not followed by 1 or 2 (as it
+occurs in EasyAbc), the stress model should default to 2, the
+Barfly model instead of 1. This has been fixed in store.c.
+
+
+April 16 2018
+
+abc2midi bugs: more issues with the %%MIDI ptstress command. The
+%%MIDI ptstress command was working for the Barfly model 1, but
+was never working for Barfly model 2.
+
+Model 2 is applied as a separate pass to the abc file
+by the function apply_bf_stress_factors() in store.c. It essentially
+changes all the note length values prior to creating the midi file.
+The %%MIDI ptstress command is processed by dodeferred() in genmidi.c
+during the last pass when the midi file is being written. This is
+already too late. In order to fix this issue the processing of
+the %%MIDI ptstress command was moved to the function event_midi()
+in store.c.
+
+There is also a conflict on how the stress factors are determined.
+If no %%MIDI ptstress command is present, abc2midi normally uses the
+builtin stress factors which are selected by the rhythm designation
+in the R: command. It is necessary to disengage this mode when
+the %%MIDI ptstress command is present. A new variable,
+stress_pattern_loaded was used to signal that the stress factors
+were set by %%MIDI ptstress.
+
+Please note that the abc tune should have not more than one
+%%MIDI ptstress command. If more than one is present, only the
+last one is effective. The %%MIDI ptstress command requires knowing
+the meter of the music, so it should be placed after the M: time
+signature specification. By default, the ptstress command assumes
+model 2; however, if you wish to use model 1, you can include
+%%MIDI stressmodel 1 command.
+
+Here is a sample use of the ptstress command.
+
+
+X:1
+T: another Barfly test
+M:3/4
+%%MIDI ptstress 3  120 1.6  60 0.8   40 0.6
+L:1/4
+R:      Waltz 
+K:C
+cc/d/e | d2g | e/d/ cB | c3 :|
+
+The R: designation is unnecessary and will be ignored. Furthermore,
+you do not need the -BF runtime parameter unless you want to
+select model 1.
+
+
+
+April 24 2018
+
+Midi2abc -stats: some midi files do not define the channel to
+program assignments until we reach the last track number. This
+results in erroneous data in the progs and progcolor output.
+Fortunately we also compute the chanactivity. We can fix this
+problem by transfering the chnactivity to the progactivity.
+
+
+May 02 2018
+
+Abc2midi - deprecated !ped-end! and introduced !ped-up! in
+store.c
+
+June 13 2018
+
+Midi2abc - catches negative time increment in midi file.
+Check made in readtrack() in midifile.c
+
+
+June 23 2018
+
+Abc2midi bug: the %%MIDI gchordbars n command is very
+idiosyncratic and only works correctly unless the abc is
+formatted exactly like this.
+
+
+X: 1
+T: gchord
+M:4/4
+L:1/4
+K: G
+%%MIDI gchord ghih
+"G" z4 
+%%MIDI gchordbars 4
+%%MIDI gchord ghih
+| z4| z4| z4| z4|
+
+it will not run correctly if the input looks like
+ 
+X: 1
+T: gchord
+M:4/4
+L:1/4
+K: G
+%%MIDI gchord ghih
+"G" z4 |
+%%MIDI gchordbars 4
+%%MIDI gchord ghih
+"G" z4| "G" z4|"G" z4| "G" z4|
+
+(Bar line appears just before %%MIDI gchordbars rather than after.)
+
+
+Fix: the variable gchordbarcount was eliminated since it was
+not useful and the cause of some problems in the function
+checkbar(). In dogchords(), we check that g_ptr does not exceed or
+equal the length of the gchord string. In dodeferred(), we
+reset g_ptr to 0 when we encounter a %%MIDI gchordbars command.
+
+Abc2midi bug: the %%MIDI drumbars n command is also idiosyncratic
+in a similar fashion.
+
+Fix: the drumbars feature was implemented in the same way as
+the gchordbars, so all of the above applies.
+
+
+October 25 2018
+
+midi2abc: introduced option mftextpulses which will output in
+pulse units instead of beat units.
+
+
+
+December 01 2018
+
+abc2abc bug: for multivoiced files where the voices are interleaved,
+abc2abc produces error messages regarding repeat symbols. For example,
+seymour@corsair:~/abc$ cat repeats.abc
+X:1
+T: abc2abc repeats in multivoice
+M:4/4
+L:1/4
+K:G
+[V: S] gfed|: abcd |
+[V: A] edcB|: ABCD |
+[V: H] GFED|: ABCD |
+[V: S] abcd :|
+[V: A] ABCD :|
+[V: H] ABCD :|
+
+abc2abc repeats.abc
+X:1
+T:abc2abc repeats in multivoice
+M:4/4
+L:1/4
+K:G
+[V:S] gfed|: abcd |
+[V:A] edcB
+%Error : Expecting repeat, found |:
+|: ABCD |
+[V:H] GFED
+%Error : Expecting repeat, found |:
+|: ABCD |
+[V:S] abcd :|
+[V:A] ABCD 
+%Warning : No repeat expected, found :|
+:|
+[V:H] ABCD 
+%Warning : No repeat expected, found :|
+:|
+
+Analysis: in event_bar in toabc.c, the variable expect_repeat
+determines whether the error message is emitted. This works
+well as long as each voice is processed in sequence but
+when the voices are interleaved, it is nececessary to maintain
+the expect_variable for each voice. The expect_repeat variable
+was moved to the voice struct. Unfortunately event_bar
+(which is used in abc2midi, yaps, and abcmatch) does not pass
+the voice struct, so it was necessary to reference the
+voice struct as a global variable.
+
+December 17 2018
+
+abc2midi: does not recognize the abcm2ps options when embedded
+in a inline information command. For example,
+K: G clef=bass
+F [I:setbarnb 1]|
+appears in one of the abc files. [I:setbarnb 1] tells abcm2ps
+to start counting bar numbers here from 1. However, abc2midi
+does not recognize this command and outputs the message:
+
+Error in line-char 269-2 : I: key ' setbarnb' not recognized
+
+There are numerous abcm2ps options that can be embedded in
+an abc file. I am not too sure how to handle this situation.
+I can give abc2midi the most common messages and tell it
+to ignore these. In store.c I introduced the function
+is_abcm2ps_option(). Presently I only check for setbarnb.
+
+
+December 21 2018
+
+abc2midi: does not recognize THICK_THIN bar line. In the
+following example,
+
+X: 1
+T: THICK_THIN bar line
+M: 2/4
+L: 1/8
+K: D
+EDFD|FGD2]|
+
+abc2midi reports the error
+Error in line-char 6-9 : Chord already finished
+
+Analysis: ]| is a type of bar line, however abc2midi assumes that
+] is ending a chord. Fix: in the function parsemusic() in parseabc.c
+we now check that whether we are in a chord before calling event_chordoff.
+We introduce a new function event_ignore() in store.c, yapstree.c, toabc.c,
+and matchsup.c to handle such situations.
+
+December 28 2018
+
+toabc.c
+The gcc compiler produces numerous warnings like
+toabc.c:1223:45: warning: '%s' directive writing up to 256 bytes into a region of size 250 [-Wformat-overflow=]
+     if (vp->gotclef) {sprintf(output," clef=%s", vp->clefname);
+fix: changed output[250] to output[300] in event_voice.
+
+January 01 2019
+
+abc2midi: warnings from time signature change.
+
+Abc2midi processes this file without warnings.
+
+X:1
+T: time signature placed at the beginning of the bar
+M: 3/4
+L: 1/8
+K: G
+C2 C2 C2 |[M:2/4]  C2 C2 |[M:3/4]  D2 D2 D2 | [M:2/4] E2 E2|
+
+However, abc2midi produces several warnings when the time signature
+is placed before the next bar line.
+ 
+X:1
+T: meter change
+M: 1/4
+L: 1/4
+K: G
+C [M:2/4] | C C [M:3/4] | D D D [M:4/4]| E E E E [M:1/4]| C|
+
+Warning in line-char 6-24 : Track 0 Bar 1 has 2 units instead of 3
+Warning in line-char 6-39 : Track 0 Bar 2 has 3 units instead of 4
+Warning in line-char 6-56 : Track 0 Bar 3 has 4 units instead of 1
+
+Analysis: Note that measures count from zero. Though both forms
+are musically correct, the latter form confuses abc2midi. Abc2midi
+applies the time signature to the bar in which it is embedded.
+To fix this issue, I introduced the function
+check_for_timesig_preceding_bar_line () in genmidi.c
+It scans the entire feature[] representation of the tune and
+switches TIMESIG with SINGLE_BAR any time TIME_SIG is immediately
+followed by SINGLE_BAR. This function is applied prior to writing
+the tracks in the midi file.
+
+January 20 2019
+
+abc2midi: suppressing the warning "clef= is overriding octave= setting"
+when the clef is specified in the K: or V: command. Parseabc.c was modified.
+It probably effects abc2abc, yaps, and abcmatch.
+
+January 31 2019
+
+abc2midi: offering the option to suppress the messages
+4.11 January 01 2019 abc2midi
+Warning in line-char 20-11 : Different length notes in tuple
+Warning in line-char 20-13 : Different length notes in tuple
+Warning in line-char 21-4 : Different length notes in tuple
+Warning in line-char 21-6 : Different length notes in tuple
+....
+using the -quiet option
+
+(A lot of early baroque music may contain tuplets of different
+length like: 
+[M:2/1](3F6E2D4 | (3C6D2E4 | (3D6E2F4 | (3:2:4G6F2D2E2 | (3F6E2C4 |
+
+Abc2midi should be able to handle tuplets with notes of different lengths.
+
+
+February 08 2019
+
+abc2midi: does not recognize dotted bar lines. In the example,
+
+X:1
+T: Dotted bar lines
+M: 2/4
+L: 1/4
+K: D
+GA : BD|EF : CF| D2 : D2|
+
+abc2midi returns the message
+Warning in line-char 17-13 : Track 0 Bar 1 has 4 units instead of 2
+Warning in line-char 17-22 : Track 0 Bar 2 has 4 units instead of 2
+
+Fix: in abc.h introduced DOTTED_BAR in featuretype.
+In parsemusic() in parseabc.c call event_bar(DOTTED_BAR,"") if a
+':" occurs by itself. In event_bar() in store.c the DOTTED_BAR is
+treated the same as the DOUBLE_BAR.
+
+March 14 2019
+
+abc2midi: warnings and error messages reference the wrong line number.
+For example for the tune
+
+X:1
+T: warnings
+M: 4/4
+L: 1/4
+K: G
+[V:1]A|
+[V:2] A|
+[V:1]Bcd|
+[V:2]EFGA|
+[V:1]DAxD|
+[V:2]Bcd|
+[V:1]EFGA|
+[V:2]DAxD|
+
+abc2midi reports that bar 1 (Bcd) has 3 beats instead of 4 in line 7.
+Line numbers start from line 1, so bar 1 is in line 8 and not line 7.
+Analysis: writetrack() in genmidi did not see feature(LINENUM) because
+it bypasses the features whose voice is not the actual voice (track)
+being written. Fix: the function findvoice() in genmidi.c now ensures
+that the global variable lineno is always updated.
+
+
+Mar 18 2019 -- Mar 22 2019
+
+abc2midi new feature: if one is not careful, it is easy for one or
+more voices to get out of synchronization with the other voices.
+When the abc music score is displayed, the barlines
+do not align. Abc2midi checks whether the number of beats in
+a bar matches the time signature. However, it does not check
+whether the beats in the corresponding bars in the different
+voices, match. This is rather difficult to do, since abc2midi
+writes out each track sequentially. As an experiment, 
+abc2midi counts the number of beats played up to each bar line,
+and as an option (-c) will output these numbers in a file
+called barloc.txt for each voice.  The numbers should match for
+all voices. Recall that the -c option processes the entire abc
+file (which may contain numerous tunes) and only returns warnings
+and error messages without producing any midi files. 
+In this implementation barloc.txt only applies to the first
+tune in the file.  (This feature is still experimental.)
+
+Implementation: introduced the integer array, barloc[1024] in genmidi.c
+which can handle up to 1024 measures in the tune. This array is
+reused for each voice. In checkbar() in genmidi.c, barloc[barno]
+stores the current track length (in midi pulses). A new function,
+dump_barloc() is introduced in genmidi.c that writes the barloc
+data in barloc.txt file. In store.c, introduced a new file handler
+diaghandle for creating the output file barloc.txt. dump_barloc()
+is called from finishfile() in store.c when abc2midi is running
+with the -c option (check flag is nonzero).
+
+The number of measures in each voice may be different, (one
+voice could end prematurely), but it is fairly easy to determine
+during the first pass when the feature array is filled. The
+number of measures in the output midi file can be much larger
+since all repeats are expanded. A new variable, nbars, was
+introduced in the voicecontext structure in store.c.
+
+
+Mar 23 2019
+
+abc2midi bug. abc2midi can be used for just checking the abc file for
+errors using the -c option. No midi files are created. Unfortunately,
+abc2midi running in this mode may halt when processing a big file
+with the message,
+
+eputc: aborting because of file runaway (infinite loop)
+
+This is a check introduced in October 15 2004 in case abc2midi gets
+into an infinite loop and produces a midi file of unbounded size.
+The output midi file is prevented from growing over 500,000 bytes.
+/* if ((back[trans[p]] != p) || (key[po] == 1)) { [SS] 2010-05-07 */
+    if (back[trans[p]] != p ) {  /* [SS] 2019-05-07 */
+/* if ((back[trans[p]] != p) || (key[po] == 1)) { [SS] 2010-05-07 */
+    if (back[trans[p]] != p ) {  /* [SS] 2019-05-07 */
+The check occurs in midifile.c by monitoring the variable,
+Mf_numbyteswritten.
+Since abc2midi with the -c option does not actually create any
+midi files, it is not desirable to do this check.
+
+Analysis: the function finishfile() in store.c calls writetrack()
+directly when it is run with the -c option; however when it
+is run without this option, writetrack() is called from mfwrite() in 
+midifile.c. mfwrite() takes care of initializing Mf_numbyteswritten
+for each tune. In order to initialize Mf_numbyteswritten when
+abc2midi is run with the -c option, we need to link it to store.c
+by declaring it as an extern.
+
+April 13 2019
+
+midi2abc bug: midi2abc crashes with a message "out of memory cannot malloc"
+on Windows 10.
+
+Analysis: in the function addstring checkmalloc allocates strlen(s)+1,
+but strncpy can copy up to strlen(s)+2 characters.
+
+Fix: increased checkmalloc to allocate strlen(s)+2 characters.
+
+
+
+April 22 2019
+
+midi2abc bug: midi2abc insists on making all rests invisible (x). Temporary
+fix: printchord() was modified so that it always prints a visible rest (z).
+
+
+May 08 2019
+midi2abc bug: accidentals fail to propagate resulting in
+
+X: 1
+T: from accid1.mid
+M: 4/4
+L: 1/8
+Q:1/4=120
+K:G % 1 sharps
+% note track
+% accidentals
+^C2 ^C2 ^C2 ^C2|
+
+Fix: in function printpitch(), removed (key[po] == 1) in
+the conditional,
+if ((back[trans[p]] != p) || (key[po] == 1))
+(I could not figure out the purpose of key[po].)
+Introduced barback[] array which is used to reinitialize
+the back[] array after each bar line.
+
+
+May 12 2019
+
+midiabc bug: -splitvoices and -splitbars is handled by the functions
+printtrack_split_voice and printtrack_with_splits which are rather
+complex and buggy. Preceding rests in the midi file corresponding
+to the following file
+
+X:1
+T: anacrusis
+M: 4/4
+L: 1/4
+K: G
+Z2|z2AB|zdef|
+
+are handled correctly without the -splitbars -splitvoices options
+but are missing with either options. The gap variable was not
+set properly in the code.
+
+May 15 2019
+
+midi2abc issue. By default abcm2ps chooses the clef (bass or treble)
+automatically on the basis of the pitch of the following note.
+For some tracks,  the pitch range falls in both the
+the treble and bass ranges resulting that the clef may oscillate
+between treble and bass. If the clef is specified in the voice corresponding
+to the track (or channel), then it is locked in. To avoid this
+oscillation the pitch histogram is determined for each channel,
+and a decision is made whether to lock in the clef. A new
+function pitch_percentiles() was introduced in the code to
+accomplish this action.
+
+May 29 2019
+
+midi2abc issue: midi2abc makes a mess of type 0 midi files because
+it does not separate the music in the different channels.
+Fix: for type 0 midi files, the different channels are treated
+as if they are put into separate tracks. New functions
+txt_trackstart_type0, txt_noteon_type0, txt_program_type0,
+addnote_type0, and addtext_type0 which copy the channel command to
+to track[chn] instead of track[0].
+
+June 06 2019
+
+abc2abc bug: the fix to recognize the THICK_THIN bar line ]|
+introduced a new problem. In the following example,
+
+X: 1
+T: bar line chord interference
+M: 4/4
+L: 1/4
+Q:1/4=142
+K:F# % 6 sharps
+z [gdGG,] z[gdGG,]|z [gdGG,] z [gdGG,]| 
+z [gdGG,] z[gdGG,]|z [gdGG,] z [gdGG,]| 
+  
+applying abc2abc to this file with the -e option returns
+
+X:1
+T:bar line chord interference
+M:4/4
+L:1/4
+Q:1/4=142
+% Last note suggests minor mode tune
+K:F# % 6 sharps
+z [gdGG,] z[gdGG,|z [gdGG,] z [gdGG,| 
+z [gdGG,] z[gdGG,|z [gdGG,] z [gdGG,| 
+
+The even numbered chords are not ended properly resulting
+in nested chords.
+
+Fix: the code in parsemusic() in parseabc.c for handling
+the closing of chords was corrected.
+Parseabc.c is part of abc2midi, abc2abc, yaps, and
+abcmatch.
+
+
+June 13 2019
+
+Major changes were made to midi2abc.c
+The conditional code separated by #if defined SPLITCODE and #endif is now
+permanently included in midi2abc. The conditionals have been removed.
+The option -splitbars (which produces splitbars with & separators)
+is now gone including the function printtrack_with_splits. The code
+was unreliable and I cannot support it. Instead you should use -splitvoices
+which was improved.
+The function printtrack_split_voice() was separated into two
+functions; the first with the same name and the second called
+printtrack_split(). Printtrack_split_voice assigns splits
+to each of the notes using the function label_split_voices().
+Label_split_voices returns nsplits, the number of splits that were needed,
+and printtrack_split is called for each of the splits.
+Printtrack_split creates a new voice for each of the splits.
+
+June 14 2019
+
+Midi2abc: to prevent printing blank lines, newline_flag global variable was
+introduced.
+
+June 17 2019:
+Midi2abc: added initialization of chordhead and chordtail in
+printtrack_split().
+
+June 20 2019:
+abc2midi crashes with the message
+.20 March 30 2019 abc2midi
+*** buffer overflow detected ***: abc2midi terminated
+Aborted (core dumped)
+for some abc files.
+
+Analysis: the crash occurs in sync_voice() in store.c when attempting
+to print a message with more than 80 characters (case PLAY_ON_REP).
+Fix: char message[128];
+
+
+June 26 2019
+abc2midi bug: trill - tie problem. The trill-tie combination
+disrupts the chordal accompaniment in the following example.
+
+%abc-2.1
+X:6
+T:trill-tie problem
+M:3/4
+L:1/4
+%%MIDI chordname m7b5 0 3 6 10 %0 _3 _5 _7
+I:MIDI=program 110 MIDI=chordprog 24 MIDI=bassprog 32
+K:A
+"Am"A/^G/ B/A/ c/B/|d/c/ e/d/ f/e/|"Bm7b5"Te3-|"E"e3|
+"Am"A/^G/ B/A/ c/B/|d/c/ e/d/ f/e/|"Bm7b5"e3-|"E"e3||
+
+Unfortunately, there is no easy fix. In order to apply
+the trill to the tied note, the tied note is converted
+into a long note. This is an example where two features
+clash with each other.
+
+
+June 26 2019
+midi2abc -splitvoices: fixing more problems in
+printtrack_split() function. Introducing firstgap[]
+and function set_first_gaps(trackno). Test file:
+
+X:1
+T: polyphonic chords
+M: 4/4
+L: 1/4
+K: C
+zC-[C-E-][CEG]|\
+zC-[C-E-][CEG]|\
+[DF-A-][FA-]Az|\
+[DF-A-][FA-]Az|
+
+More information was added to file programming/midi2abc.txt.
+
+
+June 29 2019
+midicopy requires that you specify the start and end times (or
+start and end beats) even when you are copying the entire
+midi file.
+
+midicopy returns the wrong number of seconds copied when -fromsec
+and -endsec are specified and are beyond the range of the midi file.
+
+Fixes: functions cut_beginning() and cut_ending() check global
+flags use_seconds and use_ticks. If neither are set then the
+midi file is not trimmed. These flags are set in main() depending
+on the options provided.
+
+We keep track of the current time (currentseconds) adjusting
+for tempo changes.
+
+
+July 05 2019
+
+Midicopy aborts with the message "trackdata overflow"
+
+Analysis: the input midi file contained more than 20 tracks containing
+no data. Each of those tracks contained 10 bytes. Midicopy while
+adding extra bytes for compatibility with the winamp program,
+caused the failure when the number of written bytes exceeded the
+track_size.
+
+Fix: in the function append_to_string in midicopy.c, a margin of 6
+extra bytes was introduced in the check for overflow. Also midicopy
+was modified to allow up to 64 tracks. A check is made to
+ensure this is not exceeded.
+
+
+July 12 2019
+
+Midi2abc. The handling of lyric text is currently a problem with
+midi2abc. For the present time I have added a new option -noly which
+suppresses lyric output. Introduced a new flag noly in midi2abc.c.
+
+August 02 2019
+Midi2abc -stats returns incorrect count of notes in chord.
+(This problem only affects midiexplorer.tcl.)
+Analysis: chords are identified in stats_noteon by comparing the
+Mf_currtime with the last_tick time. last_tick is also used to
+compute the note length and is also updated in stats_noteoff.
+Fix: introduced last_on_tick array which is only updated by
+stats_noteon.
+
+August 11 2019
+
+Abc2midi - valgrind detected a memory leak coming from store.c.
+Analysis: event_refno in store.c creates a voice struct, but
+it is destroyed without freeing up the the memory in startfile().
+Fix: it is not necessary to create the voice in event_refno,
+since the function getvoicecontext(1) in event_key() will create
+the voice the voice struct automatically if it does not exist.
+The function clearvoicecontext() frees up all the voice structs
+properly. 
+
+Abc2midi - valgrind detected that the variable chord_num was
+used in a conditional prior to being set in tiefix(). The
+variable is now initialized.
+
+Both of these bugs were reported by James Cowgill to Debian
+Bug Report log 890250
+(https://bugs.debian.org/cgi-bin/bugreport.cgi?bug=890250 )
+
+yaps - valgrind detected that i was not set in the conditional
+      if ((n->beaming == endbeam)||(i==64)) {
+in beamline() in drawtune.c when called from finalsizeline().
+https://bugs.debian.org/cgi-bin/bugreport.cgi?bug=890250
+fix: initialized i to 0 in beamline().
+
+midi2abc -  Integer overflow leading to heap buffer overflow
+in addstring().
+https://bugs.debian.org/cgi-bin/bugreport.cgi?bug=924947
+Fix: limited the checkmalloc to 1024 sized string.
+
+October 13 2019
+
+abc2midi: trill broken rhythm interference. Abc2midi returns the
+following message when applied to this file.
+
+X: 1
+T: trill
+M: 4/4
+L: 1/4
+K: C
+A3A|Te>dc2|
+
+Warning in line-char 6-10 : Track 0 Bar 1 has 7/2 units instead of 4
+
+In actual fact the broken rhythm is applied to the second A
+and e instead of e and d.  When the trill is removed, the program
+runs normally. Fix: in event_note in store.c all call to marknote()
+was added at the end of the conditional block beginning with
+  if ((decorators[ROLL]) || (decorators[ORNAMENT]) || (decorators[TRILL])) {
+to ensure that the start and end of the broken rhythm sequence is
+correct.
+
+
+November 06 2019 November 13 2019
+
+midi2abc: modified output for -midigram output. The header record
+now returns miditype ntrks and ppqn. The program line returns
+the current time in ticks. The changes were introduces to support
+the function show_prog_structure in runabc.tcl.
+
+December 09 2019
+
+abc2midi: some abc files use the $ character to indicate a linebreak
+in the score. For example,
+I:linebreak $
+The score contains numerous $ characters and abc2midi complains that
+it does not recognize the character $. Fix, added the lines
+
+else if (fileprogram == ABC2MIDI && *p == '$') ; /* ignore [SS] 2019-12-9 */
+                /* $ sometimes used as a score linebreak character */
+
+in parsemusic() in parseabc.c
+
+
+December 09 2019
+
+abc2midi: new feature. Double quotes are supposed to be used to indicate
+chord symbols (guitar chords) which abc2midi uses to create an
+accompaniment. Unfortunately, the double quotes notation is frequently
+misused to display other information that can cause a problem.
+Added the option -NGUI to ignore any guitar chords in the body of
+file.
+
+
+December 22 2019 December 25 2019
+
+midicopy: introduced new options for handling the percussion track.
+
+
+December 30 2019
+
+midi2abc: fix handling text messages (including %%MIDI and lyrics).
+
+
+January 03 2020
+
+abc2midi, abc2abc, yaps -- compatibility with abcm2ps.
+The %%begintext and %%endtext enclose text which should not
+be processed by abc2midi or abc2abc.   The flag ignore_line is set
+to 1 when parseline() encounters "%%begintext" and is reset to 0
+when %%endtext" is encountered. If ignore_line is 1, the rest of
+the code in parseline() is ignored when abc2midi is running.
+
+
+January 05 2020
+
+midicopy: when copying a region in the middle of a midi file,
+it may encounter and copy a midi noteoff message without a
+corresponding midi noteon message. midi2abc complains when
+it attempts to create an abc file.
+Fix: the close_note() function in midicopy.c checks whether
+the specified note is still playing. If it is not playing,
+close_note() returns -1 and a noteoff channel message is
+not issued by copy_noteoff(). In addition, it was necessary
+to fix writechanmsg_at_0 called by winamp_compatibility_measure().
+To make a proper noteon message the velocity has to be nonzero.
+The velocity of value 1 at pitch 0 should be nonaudible.
+
+
+January 06 2020
+
+midi2abc: chords such as [A3/2C3/2E3/2G3/2] are now expressed
+more compactly as [ACEG]3/2. The patch was inserted in printchord()
+in midiabc.c.
+
+January 14 2020
+
+abc2midi: addressing ticket #25 on sourceforge. abc2midi hangs
+on some systems for this example.
+
+X:1
+L:1/4
+K:C
+2c/2fac'/c'/c'/c'/c'//////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////
+
+
+Fix: add a test for zero denominator in genmidi.c
+if (tnote_denom <= 0) {
+                      event_error("note length denominator is zero or less"); /* [SS] 2020-01-14 to prevent infinite loop on some systems */
+                      exit(1);
+              }
+
+in function writetrack().
+
+January 22 2020
+
+abc2abc: added -useclef option, to specify the clef to use. It is
+useful if you are trying to learn to read the bass clef and you are
+transposing the music down an octave.
+
+
+February 12 2020
+
+abc2midi: minor changes suggested by Timm Reasbeck to the default gchord
+patterns for various meters were incorporated in setbeat() in store.c.
+
+
+March 25 2020
+
+abc2midi: after the changes to parseabc.c on January 03 2020, abc2midi
+no longer sees the %%MidiOn command. For example:
+
+X:1
+T:Tune with Repeat Text, MidiOff and MidiOn
+M:4/4
+L:1/8
+K:C
+C4 D4 | E4 F4 | \
+%%MidiOff
+["Repeat" \
+%%MidiOn
+G4 A4 | B4 c4 |]
+
+only the first 4 notes are recorded in the midi file. 
+
+
+Fix: in parseline() in parseabc.c, switched the order of the lines
+
+ handle_abc2midi_parser (line);  /* [SS] 2020-03-25 */
+
+ if (ignore_line == 1 && fileprogram == ABC2MIDI) return;
+
+
+April 30 2020
+
+abc2midi: reports warnings
+Warning in line-char 6-0 : Ignoring reserved character S
+Warning in line-char 6-3 : Ignoring reserved character P
+Warning in line-char 6-7 : Ignoring reserved character O
+when it encounters the characters S, P, and O in the music body.
+
+X:1
+T: decorations
+M: 4/4
+L: 1/4
+K: G
+SDBPAD|OBDEF|
+
+The abc standard defines S as segno, P as uppermordent, and O as
+coda, so these are completely valid.
+
+Fix: add characters O,P and S to the decorations string in
+parseabc.c. It is now
+char decorations[] = ".MLRH~TuvOPS";
+In addition, DECSIZE in abc.h was increased to 13 and I added
+#define CODA 10
+#define UPPERMORDENT 11
+#define SEGNO 12
+
+May 06 2020
+
+abc2midi: bug
+The command clef=treble+8 or clef=treble-8 fails to have any
+effect. This bug was probably introduced on December 19 2011
+and was just reported recently.
+Analysis: the bug was traced to the code in the function
+isclef() in parseabc.c. The code was modified on December 19 2011
+to fix another bug. The modification contains the line
+
+ if (fileprogram == ABC2MIDI && *gotoctave != 1 && *octave != 1) 
+
+which causes the problem. Prior to this test, the input string
+was matched to 'treble' and *gotoctave was set to 1. The string
+also matched 'treble+8', but *octave could not be reset to 1
+on account of the above modification.
+
+I see no purpose in the test *gotoctave != 1 or *octave != 1
+in the above test, so I changed it to simply to
+
+ if (fileprogram == ABC2MIDI)
+
+wherever it occurred.  This enabled the code for clef=treble+8 
+and clef=treble-8. It was found that it was still possible to
+switch back from clef=treble+8 to clef=treble.
+
+Unfortunately, the clef=treble+8, affects other designations
+such as clef=tenor. It was therefore necessary to reset
+*octave = 0. For all these situations and similar.
+
+
+June 02 2020
+
+Peter Sutton (petersutton2009@gmail.com) who packages abcmidi
+for Arch Linux reported a linkage error
+/usr/bin/ld: toabc.o:(.bss+0xd7c): multiple definition of ingrace'; parseabc.o:(.bss+0x788): first defined here /usr/bin/ld: drawtune.o:(.bss+0x168): multiple definition ofingrace'; parseabc.o:(.bss+0x788): first defined here
+
+My suspicion is that the changeover to gcc ver. 10 (2020-05-08)
+is causing these problems
+
+Fix: in parseabc.c changed
+int ingrace = 0;
+to
+static int ingrace = 0; /* [SS] 2020-06-02 */
+
+
+June 03 2020
+
+gcc-10: Stuart D Gathman (stuart@gathman.org) detected numerous
+potential problems in the C code. eg variables used for they are
+initialized, variables declared and not used, missing defaults
+in switch statements, indenting in if statements not matching
+blocks, possible missing nulls in strings, ...
+Suggested changes were inserted without changing the logic
+of the code. Changes were marked with [SDG] 2020-06-03 in case
+bugs are discovered later.
+
+
+June 20 2020
+
+In order to improve the handling of the SymbTr Turkish Makam
+database https://compmusic.upf.edu/node/287 which was converted
+to abc format in https://ifdo.ca/~seymour/runabc/makams/index.html ,
+the abc representation of the note pitches has been changed.
+The collection of abc notated files will be replaced shortly
+and will work with both abc2svg and abcm2ps thanks to the
+help of Jef Moine and Hudson Lacerda. Hudson has contributed
+patches to the abcmidi package which have been incorporated into
+parseabc.c and store.c.
+
+June 22 2020
+
+A minor change was made to midi2abc so that the pitchbend values
+are presented in units of cents.
+
+June 23 2020
+
+parseabc: renamed readlen_nocheck() to read_microtone_value().
+If the microtone value is an integer instead of a fraction,
+(i.e. no / is present), then b (the denominator) is set to 0
+to signal that it is an integer.  An integer microtone such
+as ^n or _n, implies that its pitch shift is given by n
+octave divisions where the number of divisions ndiv is specified
+in the command.
+
+%%MIDI temperamentequal <ndiv> [octave_cents] [fifth_steps] [sharp_steps]
+
+For a detailed description of the temperamentequal command,
+see the May 19 2015 insert in this document.  The nonfraction
+microtones will be used to represent the accidentals for the pitches
+in the Turkish Makam database mentioned previously. 
+
+June 25 2020
+
+parseabc: parsekey now accepts integer microtones when %%MIDI temperamentequal 
+is set. The temperament flag is declared in parseabc.c and linked to
+store.c with an extern statement, so that the parser knows whether %%MIDI temperamentequal statement
+was included in the abc file.
+
+June 27 2020
+
+abc2midi: in pitchof_b() in store.c (which implements various 
+temperaments), the Hudson Lacerda modified the pitchbends so
+that the key of A is still 440.0.
+   /* [HL] 2020-06-27 Adjust for A=440.0 with zero pitchbend */
+    pitch4096 += (9*SEMISIZE) - (3*fifth_size-octave_size);
+
+
+July 03 2020
+abcmidi: %%temperament command has been implemented by Hudson
+Lacerda (in store.c)
+July 05 2020
+parseabc.c updated to reflect that the temperament integer flag
+can take various values.
+
+You can find a test file detune.abc in the samples folder.
+
+
+July 14 2020
+yaps: cleaned up numerous gcc warnings such as
+drawtune.c:3245:16: warning: cast from pointer to integer of different size [-Wpointer-to-int-cast]
+       lineno = (int)(ft->item);
+
+changed 
+       lineno = (long)(ft->item);
+etc.
+
+
+
+July 17 2020
+
+store.c: in order to improve the accuracy of the MIDI temperamentequal
+and MIDI temperamentlinear representation, the calculations were
+performed in floating point rather than integer arithmetic. The constant
+SEMISIZE = 4096 was eliminated, and the global variables octave_size,
+fifth_size, sharp_size, and microstep_size were turned into floating
+point variables. A new function compute_fifth_size () was introduced,
+which computes the perfect fifth interval quantized into the ndiv
+comma units. The result is returned in units of cents where one
+standard octave is 1200 cents. If you run abc2midi with -v 1 
+(verbose level 1), the size of the fifth interval and other variables
+is printed.
+
+This is a significant change affecting the code in the functions
+event_midi() and pitchof_b().
+
+
+July 24 2020
+
+store.c Hudson Lacerda corrected the algorithm in compute_fifth_size()
+and fixed a bug that I had introduced.
+
+July 28 2020
+
+store.c Minor correction in store.c when the microtone denominator is
+equal to 100 (in pitchof_b()).
+
+
+August 09 2020
+
+genmidi.c: introducing %%MIDI bendstringex.
+It is similar to %%MIDI bendstring except that it linearly interpolates
+the pitchbends, causing smoother transitions.
+Method: created a new function expand_array() which expands an
+array {20, -20, ...} to {5, 5, 5, 5, -5, -5, -5 ,5} or something
+like that depending upon the parameter factor. The expanded array
+of benddatata is now treated like in %%MIDI bendstring in the
+queues.c file. Presently, I am using a factor of 4 (not configurable).
+Bendstringex limited to 64 or less increments.
+
+
+September 30 2020
+
+James Allwright has reported several problems with the abcMIDI code
+and proposed some fixes and improvements.
+
+There is a bug in parsekey resulting in an extraneous warning for
+the following file.
+
+X: 1 
+T: parsekey() test
+M:4/4  
+L:1/8 
+Q:1/4=127
+K: D phr ^f
+| =C^C =D^D =E =F ^F =G |
+
+abc2midi parsekey.abc
+4.41 August 09 2020 abc2midi
+Warning in line-char 6-0 : Ignoring string '^f' in K: field
+writing MIDI file parsekey1.mid
+
+Despite the warning the output file is still correct.
+
+abc2abc and other applications depending on parseabc.c also produce
+similar warnings.
+
+Analysis: the problem originates in the function parsekey() in
+parseabc.c. The fix consists two small changes shown here.
+
+/* shortcuts such as ^/4G instead of ^1/4G not allowed here */
+/* parsed =0; [SS] 2020-09-30 */
+
+
+  /* if (parsed ==1) { [SS] 2020-09-30 */
+  if (success > 0) { /* [SS] 2020-09-30 */
+
+
+
+drawtune.c in read_boolean increased dimension of char p[]
+to allow for null termination. -- suggested by James Allwright.
+
+stresspat.c in custom_stress_file() added fclose(inhandle)
+to close the open input file. -- suggested by James Allwright.
+
+matchsup.c, yapstree.c, and toabc.c: event_temperament declared as
+event_temperament(*line) instead of event_temperament(**line).
+
+parsekey() was split into two functions, parsekey() and process_microtones().
+
+
+October 06 2020
+
+abc2abc bug: abc2abc hangs when it is applied to a multivoiced file
+with the -n option. The following file hangs abc2abc
+
+X: 1
+T: hangs abc2abc
+M: 4/4
+L: 1/4
+K: C
+V:1
+C4|E4|D4|E4|
+F4|G4|A4|B4|
+V:2
+D4|F4|G4|A4|B4|c4|
+C4|B,4|
+
+eg
+
+abc2abc hanger.abc -n 3
+X:1
+T:hangs abc2abc
+M:4/4
+L:1/4
+K:C
+V:1
+C4|E4|D4|
+E4|F4|G4|A4|
+
+(Hangs when it encounters the V:2.)
+
+Analysis:
+The program hangs in a infinite loop 
+331	  while (v->bars_complete > v->bars_remaining) {
+in the function complete_bars in toabc.c
+v->bars_complete is 2, v->bars_remaining is -1 and bars_done is always 0.
+
+If you insert a comment before V:2, the program runs normally.
+
+Fix: insert the line
+ close_newabc(); /* [SS] 2020-10-06 */
+in the function event_voice().
+
+Explanation:
+v->bars_complete, v->bars_remaining are elements of a voice structure
+which has room for up to 30 voices. When V:2 is encountered, the
+program automatically calls event_voice and switches to a new voice;
+however, the program has not finished with voice 1 and the voice
+structure gets corrupted during the switch. Event_voice was modified
+so that any remaining data in voice 1 is released before the switch.
+
+
+October 7 2020
+James Allwright has introduced event_score_linebreak in parseabc.c,
+yapstree.c, etc. which replaces the change made on December 09 2019.
+Except for yapstree.c, event_score_linebreak does nothing.
+
+
+October 10 2020
+midicopy new feature: -zerochannels will set all channel numbers in
+the midi file to zero. Some midi files (http://scarlatti.antikytherapubs.com/ )
+adjust the tuning by assigning each pitch class to a separate channel
+and applying an appropriate pitchbend to each of these channels.
+This may pose a problem for some software which attempts to render the
+midi file in music notation.
+
+
+October 12 2020
+James Allwright has made significant improvements to parseabc.c, toabc.c,
+and yapstree.c related to  repeat checking. In parseabc.c, new functions
+were introduced: init_voice_contexts, reset_parser_status,
+interpret_voice_label, check_bar_repeats, and check_and_call_bar().
+The functions isnumberp(), init_voicecode(), and interpret_voicestring()
+have been retired. Reset_parser_status() is called each time a new
+X: reference field command is encountered. Check_bar_repeats() replaces
+a lot of the code that appears in event_bar() defined in toabc.c and
+yapstree.c. parsemusic() calls event_bar indirectly through the
+function check_and_call_bar(). Minor changes were made to toabc.c, store.c
+and yapstree.c to accommodate the changes to parseabc. In particular,
+a new flag repcheck is introduced and connected to parseabc.c as
+an extern (in parseabc.h). In addition a new struct (voice_context)
+has been introduced in parseabc.h.
+
+
+October 19 2020
+James Allwright has implement the abc draft standard 2.2 clef parameters.
+This specifies the clef by letter and line number on which it sits.
+See http://abcnotation.com/wiki/abc:standard:v2.2#clefs . An
+example is given below.
+
+X:1
+T: clef test
+M: 4/4
+L: 1/4
+K: D clef=G2
+"Treble" DEFG|AGFE|ABcd|
+K: D clef=G1
+"French violin" DEFG|AGFE|ABcd|
+K: D clef=F5
+"Sub-bass" DEFG|AGFE|ABcd|
+K: D clef=F3
+"Baritone" DEFG|AGFE|ABcd|
+
+The implementation involved major changes to parseabc.c and the creation of
+new files music_utils.c and music_utils.h. The function isclef() in parseabc.c
+has been revised and now calls get_standard_clef() or
+get_extended_clef_details() that are defined in music_utils.c.
+The clef is represent by a new structure cleftype_t.  parseclef() and
+event_key() defined in parseabc.c have a new parameter, a structure newclef.
+
+Minor changes were made to store.c, toabc.c, matchsup.c. and debug.c.
+Significant changes were made to yapstree.c and drawtune.c.
+
+The makefiles folder has been moved to legacy_code.
+
+
+October 27 2020
+
+James Allwright cleaned up the yaps source code, (uninitialized variables)
+and memory leaks detected by valgrind. In particular, one of the elements
+in the struct feature (item) was changed to a union of a void pointer
+and a number. This change propagated to the other files position.c,
+debug.c, yaprstree.c and drawtune.c. There are too many changes in
+yapstree.c and drawtune.c to list.
+
+
+November 01 2020
+
+Yaps: James Allwright fixed a bug introduced recently that caused yaps
+to shift the notes down two ledger lines when the clef is not declared
+(parseabc.c). More security checks were introduced to prevent yaps
+and midi2abc to produce lines greater than 256 characters (drawtune.c,
+drawtune.h, yapstree.c  and midi2abc.c).
+
+November 07 2020
+Yaps: a missing voidptr prevented the compilation of drawtune.c on MacOS.
+Lines 3006-3011 was replaced with
+  if (v->place->type == LEFT_TEXT) {
+      printtext(left, v->place->item.voidptr, &textfont);
+    };
+    if (v->place->type == CENTRE_TEXT) {
+      printtext(centre, v->place->item.voidptr, &textfont);
+    };
+
+
+December 10 2020
+
+James Allwright has upgraded the parser so it can now interpret
+complex time signatures as shown in this example.
+
+X:1
+T: Example 1 using complex time signature
+M:(3+2+2)/8
+L:1/8
+K:G
+abc de fg|GGG aa bb|gfe GG FF|
+
+In addition the handling of the L: field was improved.
+This impacts abc2midi, yaps, abc2abc, and abcmatch.
+The implementation of these changes involved creating a new
+typedef structure (timesig_details) in abc.h, and numerous new
+functions or upgrades in parseabc.c (check_power_of_two,
+read_complex_has_timesig, read_L_unitlen, copy_timesig, 
+interpret_voice_label, ... Lots of changes to parseabc.h.
+Minor changes to store.c, toabc.c yapstree.c to link to the
+new functions in parseabc.c
+
+
+January 21 2021
+
+Abc2midi bug: the following tune exposes several problems.
+
+X:1
+T: voice repeats
+M: 4/4
+L: 1/4
+K:C
+[V:1] C2E2 |
+[V:2] C,4 |
+[V:1] D2F2 & f4|
+[V:2] D,4 |
+[V:1] E2G2   ::
+[V:2] E,4 ::
+[V:1]d2B2  |
+[V:2]B,4 |
+[V:1] c2A2|
+[V:2] A,4 |
+[V:1] B2G2 :|]
+[V:2] G,4 :|]
+
+Running abc2midi produces the following messages.
+voice mapping:
+  1     2   
+writing MIDI file repeats1.mid
+Error in line-char 8-10 : Expected end repeat not found at |:
+Error in line-char 8-10 : Expected end repeat not found at |:
+Warning in line-char 18-10 : Track 2 is 48.054165 quarter notes long not 40.054165
+Error in line-char 10-13 : Found unexpected ::
+Warning in line-char 18-11 : Track 3 is 36.054165 quarter notes long not 40.054165
+
+The first two error messages do not make sense since it points to
+line [V:1] D2F2 & f4| which does not contain a left repeat |: .
+Furthermore the double repeat E2G2 :: is ignored and that section is
+not repeated causing a loss of synchronization between the two voices
+and unequal tracks.
+
+Analysis:
+If we remove the split voice &f4, abc2midi runs without errors.
+If instead we put opening repeats |: in the first measure,
+[V:1] |: C2E2 |
+[V:2] |: C,4 |
+abc2midi again runs without errors.
+
+The problem is caused by a bug in the function add_missing_repeats (store.c)
+which is called by scan_for_missing_repeats. After, the first call to
+insertfeature, the locations in the array add_leftrepeat_at[] no longer
+point directly to the VOICE features but before. (The insertion shifts
+everything to the right.) It is necessary to adjust this position by
+looking ahead.
+
+
+January 24 2021
+
+Abc2midi: in some abc files the grace note sequence occurs after the
+host note just before a barline. The grace sequence does not steal time
+from a note eventually causing a synchronization problem between
+the voices. Fix: the grace sequence is removed from the internal
+representation using a new function cleargracenotes() in store.c if
+a bar line is encountered during the search for the host note.
+
+Hooks to new instructions !accent! !mordent!, !sfz!, !wedge! were
+added to the function event_handle_instruction() in store.c.
+
+
+February 21 2021
+
+Abc2midi bug: unfortunately the fix applied to add_missing_repeats
+applied on January 21 2021 caused a new problem for single voice files.
+For example:
+
+X: 1
+T: repeat bug
+R: jig
+M: 6/8
+L: 1/8
+K: G
+D |"G" ~G3 GAB |"D"ABA ABd | "G"edd gdB | "D"AGF "G"G2 ::
+ A | "G"BAB dBd| "Em"ege "G"dBd | gfg "D"aga | "G"bgf g2 :|
+
+Those files do not contain a VOICE feature, so that the fix results
+in the leftrepeat being misplaced. The problem was repaired by
+testing the varieable voicesused before searching for the VOICE feature.
+
+
+
+March 10 2021
+
+Abc2midi segmentation error: the following tune causes abc2midi to
+crash.
+
+X:6
+T:TEMP
+L:1/4
+M:2/2
+Q:1/4=112
+%%MIDI drum d2dd 39 39 39
+%%MIDI drumon
+K:G
+G4
+
+Fix: in event_midi check that the v structure is not NULL before
+setting v->hasdrums to 1. If it is NULL send an error message that
+%%MIDI drumon must occur after the first K: header.
+
+
+March 27 2021
+abcmatch.c bug fix reported by umbraticus.
+277:
+        if (nbars >0 ...
+should be
+        if (*nbars >0 ...
+
+
+
+March 30 2021
+abc2midi bug: though grace notes only contain notes, the syntax allows
+you to substitute chords for grace notes. For example,
+
+X:1
+T:acc
+M:4/4
+L:1/4
+K:G
+[DF]|E {[bc]}B cd|D4|
+
+The function applygrace_new (in store.c) was modified so that the two notes
+in the chord [bc] are treated as if they were one note. Otherwise
+the measure would be too short (B is shrunk to make room for b and c)
+and there could be a loss of synchronization between the voices.
+
+April 26 2021
+
+abc2midi: bar line alignment. The feature introduced in Mar 18 2019,
+had a few issues. If the bar ends with a rest, the number of beats
+is incorrect because there is no MIDI message to indicate a rest other
+than a gap between a NOTEOFF and the following NOTEON and barlines
+do not exist in midi files. Using a cumulative beat count does not
+detect the possibility that the bar lines can realign because of
+two errors cancelling out. As an experiment, I save only the bar size.
+
+
+May 09 2020
+
+abc2midi, abc2abc, yaps -- compatibility with abcm2ps.
+The %%beginps and %%endps enclose text which should not
+be processed by abc2midi or abc2abc.   The flag ignore_line is set
+to 1 when parseline() encounters "%%beginps" and is reset to 0
+when %%endps" is encountered. If ignore_line is 1, the rest of
+the code in parseline() is ignored when abc2midi is running.
+
+
+May 10 2020
+
+abc2midi: the following file causes a core dump.
+
+X:1
+T:Autumn Ale
+C:Chance Thomas, Stephen DiGregorio, Geoff Scott and/or Brad Spear
+R:Jig
+S:The Lord of the Rings Online Soundtrack
+O:Turbine's Middle Earth
+Z:Northman
+N:This is not intended for percussion instruments.
+Q:333
+M:6/8
+L:1/8
+K:D
+AGA BA/3B/3A/3G | FE/3F/3E/3D EFG |
+
+abc2midi notpowerof2.abc
+4.53 May 09 2021 abc2midi
+Error in line-char 13-5 : 3 b is not a power of 2
+Error in line-char 13-8 : 3 b is not a power of 2
+Floating point exception (core dumped)
+
+Analysis: the crash occurs in the function reduce (0)
+which cannot handle a division by zero. The function
+check_power_of_two(3) in parseabc.c returns 0 when the
+argument is not a power of 2. Fix: changed the return
+to -1. The program does not crash but the midi file
+is not created correctly.
+
+
+
+May 19 2020
+
+abc2midi: the following file causes abc2midi to hang.
+
+X:1
+T: Hangs abc2midi
+L:1/4
+K:C
+2c/2fac'/c'/c'/c'/c'///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+James Allwright intoduced a fix in readlen() in parseabc.c
+
+
+May 22 2021
+
+abc2midi: treble-8 not applied in K: or V: commands after October 19 2020
+update. For example,
+
+X:1
+T: transposition
+L:1/2
+M:C
+K:none clef=treble-8 
+V:1
+cz
+V:2
+zc
+
+The note c should be played with midi pitch 60 instead of 72.
+James Allwright made minor fixes to parseabc.c and store.c, in order
+to get these options working again.
+
+
+
+May 25 2021
+
+James Allwright added more security checks to stop the
+parser from reading numbers beyond the largest integer. Changes
+were made to parserabc.c and midi2abc.c
+
+The abc2abc -s spacing function was modified to ignore certain
+time signatures like M: none or M:7/8. The code for dealing with
+3/2, 3/4, 3/8 ... time signatures was improved.
+
+
+June 24 2021
+
+abc2midi bug: in the following sample
+
+X:1
+T: octave
+M: 2/4
+L: 1/8
+K: none octave=1
+V:1
+C4|
+V:2
+C4|
+
+The octave=1 applies only to voice 1 and does not
+act as global variable applying to both voices.
+
+Analysis: event_octave either sets global.octaveshift or
+v.octaveshift depending upon the variable pastheader. Pastheader
+was set to 1 by headerprocess() in event_key() prior to calling
+event_octave which prevented global.octaveshift from being set.
+
+Fix: moved headerprocess(), getvoicecontext(), etc to after
+calling event_octave().
+
+
+June 27 2021
+
+midi2abc: bug
+For some midi files midi2abc returns something like this
+X: 1
+T: from gchordbreakdown1.mid
+M: 4/4
+L: 1/8
+Q:1/4=120
+K:C % 0 sharps
+V:1
+K:E % 16 sharps
+=c=d e=g e4| \
+
+
+Analysis, in the function handletext(), the local variable sf is
+declared as an integer but not initialized. The function
+sscanf(str,"%d %d",&sf,&mi);
+attempts to read sf and mi from str, but str does not contain
+any integers, and sf is not changed.
+Temporary fix: initialized sf to 0.
+
+
+June 27 2021
+
+abc2midi: %%MIDI gchordoff produces garbage. In the following file
+
+X:1
+T: gchord breakdown
+M: 4/4
+L: 1/8
+Q:1/4=120
+K:C
+%%MIDI gchord ghi2ihi2
+%%MIDI gchordoff
+"C" cd eg e4 |"Am" ag ag e4 |
+%%MIDI gchordon
+"Dm" defe d4 | "G7" g6z2 |
+
+The output in track 2 as seen by midi2abc looks like this.
+X: 1
+T: from gchordbreakdown1.mid
+M: 4/4
+L: 1/8
+Q:1/4=120
+K:C % 0 sharps
+V:1
+cd eg e4| \
+ag ag e4| \
+de fe d4| \
+g6 
+V:2
+F,,,,F,,,, F,,,,2 F,,,,F,,,, F,,,,2| \
+F,,,,F,,,, F,,,,2 F,,,,F,,,, F,,,,2| \
+D,F, A,2 A,F, A,2| \
+G,B, D2 DB, D2|
+
+instead of
+
+X: 1
+T: from gchordbreakdown1.mid
+M: 4/4
+L: 1/8
+Q:1/4=120
+K:C % 0 sharps
+V:1
+cd eg e4| \
+ag ag e4| \
+de fe d4| \
+g6 
+V:2
+z8| \
+z8| \
+D,F, A,2 A,F, A,2| \
+G,B, D2 DB, D2|
+
+Analysis: abc2midi works correctly without the
+%%MIDI gchord ghi2ihi2
+declaration. The problem occurs in the function dogchords().
+This function was expanded to handle alberti starting from May 1 2004.
+Unfortunately, the fix introduced in 2016-01-03 introduced this
+problem when %%MIDI gchordoff sets gchords to 0. The else branch
+outputs gchordnotes[gchordnotes_size] when in fact, no note should
+be queued out.
+
+Fix: prefixed the switch(action) statement with the line
+ if (gchords) /* [SS] 2021-06-27 */
+preventing any note output when gchords is 0.
+
+In addition, the case 'b' was missing a break, allowing the switch statement
+to continue to case 'c' and causing a different problem when
+%%MIDI gchord ffbb
+
+
+September 15 2021
+
+abc2midi bug:
+The last fix in June 27 2021 inserting a break introduced a new bug.
+The chord associated with the 'b' gchord code was missing. b and f
+codes were indistinguishable. Fix: removed the break in the switch
+statement for case b:
+
+
+October 11 2021
+
+abc2midi new feature:
+In compliance with the ABC draft standard 2.2, I introduced additional
+K: and V: options for transposition. You can now indicate the number
+of semitones to transpose by giving the original note and the 
+corresponding transposed note in the K: or V: field using either
+shift = note1note2
+sound = note1note2
+instrument = note1/note2
+The number of semitones is determined by the difference note2 - note1.
+
+Abcm2ps and abc2svg recognize this command, but abc2abc, yaps, and
+abcmatch ignore this new option.
+
+http://abcnotation.com/wiki/abc:standard:v2.2#transposition
+
+Here is a test sample:
+
+X:1
+T: standard 2.2 transposition
+M: 4/4
+L: 1/4
+K: C  
+V:1 
+Bcde|Bcde|
+V:2
+Bcde|Bcde|
+V:1 shift = Bc
+Bcde|Bcde|
+V:2
+Bcde|Bcde|
+V:1 sound = dc
+Bcde|Bcde|
+V:2
+Bcde|Bcde|
+V:1 instrument = c/^D
+Bcde|Bcde|
+V:2
+Bcde|Bcde|
+V:1 transpose = 0
+Bcde|Bcde|
+V:2 shift=DE,
+Bcde|Bcde|
+
+
+October 15 2021
+
+Abc2abc -P bug
+
+
+
+X:1
+T: P bug
+M:4/4
+L:1/4
+V:1 clef=treble
+V:2 clef=bass
+%%staves [1 2]
+K:C
+V:1
+C2 D2  |  C4 |
+V:2
+C,2 G,2 | C,4|
+
+The command
+abc2abc t.abc -t 3 -P 1
+fails to transpose voice 1
+
+This bug has been around since this option was introduced in June 7 2011.
+Fortunately, it has not bothered anyone until recently.
+If you add another K:c after the first V:1 command in the body as
+shown below.
+
+X:1
+T: P bug
+M:4/4
+L:1/4
+V:1 clef=treble
+V:2 clef=bass
+%%staves [1 2]
+K:C
+V:1
+K:C
+C2 D2  |  C4 |
+V:2
+C,2 G,2 | C,4|
+
+then voice 1 will be transposed correctly. Unfortunately, there is
+no easy fix. When the -P option is present, abc2abc ignores the
+first K: field command. (In toabc.c line 1643 event_key aborts
+prior to setting up the arrays for a key transpose. Commenting
+out this return statement introduces another problem.)
+
+The main issue is that abc2abc only does one pass through the
+input file. It does not know whether there is a K: field command
+following V:1. If it assumes that there is none and forces a
+call to event_key in event_voice, there may be another problem
+when a different K: field command is found eventually. I have
+decided to suspend support to the -P option because it would be
+too complicated to fix this.
+
+
+November 25 2021
+
+abcmatch bug. The fix on 2021-03-27 made abcmatch non-operable. The
+number of bars *nbars is never incremented. The line was replaced
+with
+if (*nnotes > 0) { /* [SS] 2021-11-25 */
+in the function make_note_representation(...)
+
+
+December 05 2021
+
+abc2midi new feature. Abc2midi did not recognize double flats or double sharps
+in the gchord. For example
+
+X:1
+T: Double flat gchord
+M: 4/4
+L: 1/4
+K: C
+"Dbb" C4| C4 |
+
+returns the error message
+Error in line-char 6-0 : Unrecognized chord name "b"
+(Hint: use %MIDI chordname to define it. eg %MIDI chordname sus4 0 4 7).
+
+Fix: in event_handle_gchord in store.c, now check for a double accidental.
+
+
+December 10 2021
+
+abc2midi: introduced gchord elements k and K. A gchord string can
+contain and of the letters in zcfbghijkGHIJKx. Note that the chord
+elements j,J,k,K are only defined for gchords with 4 or 5 notes like
+M9 or M11. Here is a test example.
+
+X:1
+T: Gchord string
+M: 4/4
+L: 1/4
+K: C
+%%MIDI chordname x 0 3 5 7 9
+%%MIDI gchord fGHIJK
+"C11" C4 | C4 |
+"Cx"  C4 | C4|
+"C11/E" C4 | C4|
+"C11/G" C4 | C4|
+"C11/B" C4 | C4|
+
+
+December 12 2021
+
+abcmidi: changed bar length warning as suggested by James Allwright.
+
+
+January 13 2022
+
+abc2midi: stack overflow bugs reported by Kolja Grassmann
+<koljagrassman@mailbox.org>
+
+static int getword(place,w) in genmidi.c
+check that the syllable[200] array is not overrun
+in the while loop ((syllastus != postword)...) add && (i<199)
+
+static void karaokestarttrack in genmidi.c
+replace strcpy(atitle+2,atext[pitch[j]])
+with strncpy(atitle+2,atext[pitch[j]], 197)
+to prevent overflowing the atitle[200] array
+in three places.
+
+static int inlist(place, passno) in genmidi.c
+To prevent stack overflow in msg[100];
+use snprintf instead of sprintf
+snprintf(msg, 100, "Bad variant list : %s", atext[pitch[place]]);
+
+void event_handle_instruction(s) in store.c
+To prevent overrunning the array buff[MAXLINE]
+used snprintf instead of sprintf
+ snprintf(buff, MAXLINE, "instruction !%s! ignored", s);
+
+void event_info_key(key, value) in store.c
+To prevent overrunning the array errmsg[80]
+used snprintf instead of sprintf
+snprintf(errmsg, 80, "I: key \' %s\' not recognized", key);
+
+
+January 27 2022
+
+abcmidi: new feature
+%%MIDI pitchbendrange semi
+maps the pitchwheel 0 to 16383 to semi semitones. By default semi
+is set to 2. If you change it to 4, then the pitchwheel maps into
++/-4 semitones. This effects all microtones in the active channel
+when semi is not 2. %%MIDI temperament commands may not work
+correctly. Here is an example.
+
+X:1
+T: pitch bend with RPN
+M: 4/4
+L: 1/4
+K: G
+%%MIDI program 70
+G2 B2 |\
+%%MIDI bendstring 500 500 500 500 500 500 500 500 500 500 500 500 500 500 500 500 500 500
+!bend! G4 |\
+%%MIDI pitchbendrange 7
+!bend! G4 |
+
+February 12 2022
+Midi2abc -mftext: adjusted the pitchbend sensitivity bend2cents when
+a RPN control command is received (in function mftxt_parameter).
+
+February 13 2022
+abc2midi: added an optional third parameter to %%MIDI bendvelocity
+which specifies the number of MIDI pitchbend messages to create.
+If this parameter is missing, the default is 8 as before.
+
+
+February 18 2022
+abc2midi bug: the K: and V: score option transposes the music in the
+wrong direction. eg
+
+X:1
+T: transpose
+M: 4/4
+L: 1/4
+K: G sound = DC
+CDEF|GABc|
+
+CDEF... converted to BbCDE.. instead of DEF#G...
+
+Fix: swapped p2 and p1 in
+          *transpose = p2 - p1;
+in parsesound() in parseabc.c
+
+February 21 2022
+abc2abc mangles text. eg
+input:
+
+X:1
+T: Text mangled by abc2abc 
+Q:1/2=120
+M:4/4
+L:1/8
+K:G bass octave=-2
+%%begintext center
+this text is mangled
+%%endtext
+%%
+!f! g2 z d g2 z d | gdgb d'2 z2 | c'2 z a c'2 z a | cafa d2 z2 | gggg gggg | [I:repeat] |
+
+abc2abc text.abc -t 2 >output.abc
+
+output:
+
+X:1
+T:Text mangled by abc2abc 
+Q:1/2=120
+M:4/4
+L:1/8
+K:Amaj clef=bass octave=-2
+%%begintext center
+this tfxt is mbnalfe
+%%endtext
+%%
+!f! a2 z e a2 z e | aeac' e'2 z2 | d'2 z b d'2 z b | dbgb e2 z2 | aaaa aaaa | [I:repeat] |
+
+Analysis:
+Parseline (line) in parseabc.c checks the line for %%begintext using strcmp.
+Unfortunately, it does not find a match because the line also contains
+the word 'center'.
+
+Fix: replaced 
+if (strcmp(line,"%%begintext") == 0) {
+with
+if (strstr(line,"%%begintext") != NULL) {
+which returns the pointer to %%begintext in the line.
+
+
+March 20 2022
+
+abc2midi bug: I could not demonstrate this bug on my own system.
+
+When abc2midi is compiled on a Debian linux system using the -O2 compilation
+flag (by default), it produces a faulty midi file for abc files containing
+gchords. Here is a sample file.
+
+%abc-2.2
+X:1
+T:Test
+M:C
+L:1/4
+Q:1/4=135
+V:S clef=treble
+V:s clef=treble
+K:C
+%%score (s S)
+%
+[V:s] "C" x2 "a" x2 |
+[V:S]  C  C   A A   |
+
+The problem occurs with the bass accompaniment generated by "a". The
+bass accompaniment creates a long string of A,, notes.
+
+This problem disappears when abc2midi is compiled without the
+-O2 optimizer.
+
+Analysis: the bug was traced to the code gchord_configure in genmidi.c.
+The limit of the loops
+ for (j=0; j<chordlen[chordnum]; j++)
+contain bad data when chordnum is set to -1 (for bass accompaniment).
+
+Fix: exit from gchord_configure function when chordnum is less than
+zero.
+
+The problem was identified to me by Jakob Englhauser. Jakob verified
+that this fix works.
+
+
+April 06 2022 midi2abc: removal of spaces in text strings for control
+messages.
+
+
+April 27 2022 abc2midi: Recanting change from February 18 2022.
+The swap was incorrect.
+Fix: swapped p2 and p1 in
+          *transpose = p2 - p1;
+in parsesound() in parseabc.c
+abc2midi now transposes this file correctly.
+
+
+X:1
+T: transposition
+M: 4/4
+L: 1/4
+K:Cm
+V:1 shift=cF
+cdef|gabc'|
+V:2 sound=cF
+cdef|gabc'|
+V:3 score=cF
+cdef|gabc'|
+V:4 instrument=cF
+cdef|gabc'|
+
+Note that the command instrument=cF is not part of the abc standard
+and abc2svg does not recognize it.
+
+
+April 28 2022
+
+midi2abc: minor change for -stats function
+
+
+May 05 2022
+
+midicopy: introduced new options -nopressure and -nocntrl
+
+
+May 20 2022
+
+Improvements in parsing umlaut characters in the T: Q: commands
+and guitar chords in compliance with section 8.2 of the 2.2 Abc standard
+(mnemonics). Here are examples where the mnemonics occur.
+
+X:7
+T:Slurs and Ties
+T: Title with f\"unny chars like \005 Çéñô Àçäßö © …
+M:C|
+K:Ebm
+[| (CDEF) ((3efg) ((3gag)| "_demit\"asse" (C2 EF) (ef(ga)) | ((c2 (3(d)ef) e2)\
+ A2-|A4 c4-|(c4(e4)|a8) |]
+
+X: 1
+T: Traveller's Joy
+R: polka
+M: 2/4
+L: 1/8
+Q: "bl\"oop" 1/4=90
+K: Gmaj
+"^Duggie" f>g ag/2f/2 | "<G\"odel" gG B/2c/2d | "C" ee "G" dg/2B/2 | B/2A/2G/2B/2 "D" A2 |
+"D" f>g ag/2f/2 | "G" gG B/2c/2d | "C" ee "G"dg/2g/2 | "D" af "G" g2 :|
+%
+
+X: 2
+T: Tempo example
+M: 4/4
+L: 1/4
+Q: 1/4=90 "c\"ah\"o\"ots"
+K: G
+abcd|efga
+
+James Allwright added new functions to do the umlaut handling:
+umlaut_get_buffer()
+umlaut_build_string()
+and parsename/parsesname were combined into one function.
+
+June 14 2022
+
+James Allwright has added support to the w:+ and +: lyric fields
+as defined in the 2.3 abc standard. The following examples tests
+the new feature.
+
+X:1
+T: Strange w: field example from abc 2.2 standard
+N: This example appears in section 3.3 of the standard, which says :
+N: The following is a legal continuation of the w: field, 
+N: although the usage not recommended
+M: 4/4
+L:1/4
+K:G
+abcd|efgz|
+%%vocalfont Times-Roman 14
+w:nor-mal
+% legal, but not recommended
+%%vocalfont Times-Italic *
++:i-ta-lic
+%%vocalfont Times-Roman *
++:nor-mal
+
+X:2
+T: Continuation Example
+M:4/4
+L:1/8
+K:G
+% legacy style continuation
+B3A | "G"G2D2 B,2D2 | G4 z2G2 | "D7"A2A2 A2A2 | A4 ||
+w: Oh, the Grand Old Duke of York, \
+w: he had ten thou-sand men.
+% + field style continuation
+B3A | "G"G2D2 B,2D2 | G4 z2G2 | "D7"A2A2 A2A2 | A4 || 
+w: Oh, the Grand Old Duke of York,
++: he had ten thou-sand men.
+% w: + style continuation
+B3A | "G"G2D2 B,2D2 | G4 z2G2 | "D7"A2A2 A2A2 | A4 z2 ||
+w: Oh, the Grand Old Duke of York,
+w: + he had ten thou-sand men.
+
+There are numerous small changes.
+In abc.h, added WORDEXTEND feature type.
+In parseabc.h defined W_PLUS_FIELD and PLUS_FIELD
+ and added a new integer parameter 'append' to the
+ function event_word
+In structs.h added lyrics_end
+In parseabc.c preparse_words() has been split into two
+ new functions preparse2_words() and preparse1_words()
+ new input parameter in the function event_words()
+In store.c, toabc.c, matchsup.c, and yapstree.c, modified
+ the function event_words.
+In genmidi.c introduced function check_wordextend()
+In drawtune.c added the case WORDEXTEND in functions sizevoice()
+ and printvoiceline().
+
+July 31 2022
+
+The abcmidi package creates a new voice when it sees
+V: T clef=tab
+where tab indicates tablature. As a result abc2midi
+creates a separate track for this voice which can cause some
+problems.
+
+Fix: parseabc.c and music_utils.c was modified to ignore
+the clef=tab indication.
+
+
+August 1 2022
+
+Fixed the abc parser so it does not report a malformed note
+when it encounters a dotted bar line .|  -- (in parsemusic() in parseabc.c).
+The dotted bar line is treated as a regular bar line.
+
+
+August 23 2022, September 01 2022
+
+midi2abc -midistats introducing quietTime.
+
+December 5 2022
+
+Midi2abc has been getting too big and it is time to split it into
+separate applications.  Midistats is a new application that will replace
+the midi2abc -midistats option.
+
+
+December 9 2022
+
+Cleaning out -stats code in midi2abc.
+
+
+December 21 2022
+
+abc2midi:
+Wnen <note1> equals <note2> in the instrument=<note1>/<note2>  directive,
+note2 should be treated as c (midi pitch 72).  Fix: parsesound in
+parseabc.c was modified to return a midi pitch of 72 when the two
+notes are equal.
+
+test file:
+
+X:1
+T: transpose
+M: 4/4
+L: 1/4
+K: C instrument=F/F
+FGAB|cdef|
+
+produces a midi file which looks like
+
+X: 1
+T: from h1.mid
+M: 4/4
+L: 1/8
+Q:1/4=120
+K:C % 0 sharps
+V:1
+c2 d2 e2 ^f2| \
+g2 a2 b2 c'2|
+
+when it was translated back to abc using midi2abc.
+
+Note that this change also applies to sound= and shift= even though
+this may not be specified in the standard
+http://abcnotation.com/wiki/abc:standard:v2.2#transposing_instrument_examples
+
+
+December 22 2022
+
+abcmidi: segementation fault. The following file produced a
+segmentation fault.
+
+X:1
+T: transpose
+M: 4/4
+L: 1/4
+K: C instrument=F 
+FGAB|cdef|
+
+Analysis: there is an invisible space following F in the
+line K: C instrument=F . As a result the function note2midi
+called pitch2midi with an invalid note (a space). The line
+p = (int) ((long) strchr(anoctave, note) - (long) anoctave);
+returned a bad index into the scale array.
+
+Fix: tested that p is in the range 0 to 7.
+
+
+December 27 2022
+
+abcmidi: The instrument=<note1>/<note2> is defined as a shorthand
+for score=<note1><note2> sound=c<note2>. For instrument=,<note1>
+indicates the key of the instrument and  <note2> is either c or C.
+The sound= directive specifies the note and how it is played.
+For example, sound=c_B indicates that the note c is played as
+_B on the instrument. Every note is transposed down by two semitones.
+The problem is that, the notes in the instrument directive are
+in the opposite order of the sound= and score= directives.
+The function parsesound() in parseabc.c treats takes care of
+the directives sound =, shift = and instrument =.
+Unfortunately, all these directives are treated in the same
+manner causing the instrument= directive to transpose
+in the wrong direction.
+
+Fix: for the special case, instrument=, transpose is set to
+p1 - p2 instead of p2 - p1.
+
+The '/' is only part of the instrument= syntax. Note2midi has
+an extra parameter, word, indicating the type of directive.
+It will issue a warning if it detects a '/' in the sound= or
+shift= directives.
+
+December 30 2022
+
+abcmidi: The instrument=*/c is a special directive that suppresses
+a transpose.  For example:
+
+X:2
+T: transpose using instrument=_B/c
+T: clarinet coded in concert pitch, displayed in Bb (as in player part)
+M: 4/4
+L: 1/4
+K: C 
+V:1 nm="Flute"
+CDEF|GABc|cBAG|FEDC|
+V:2 instrument=_B/c  nm="Clarinet\nin Bb"
+CDEF|GABc|cBAG|FEDC|
+
+The notes in V:2 are displayed up using score=_Bc, but they are still
+played as written (sound=cc does nothing).
+Fix: the code in the block 
+if (casecmp(word,"instrument") == 0 {
+...
+}
+in parsesound() (parseabc.c) was rewritten.
+
+
+January 05 2023
+
+abc2midi: instrument =F/D transposes cdec up by 3 semitones instead of
+down by 10 semitones in the following example.
+
+X:5
+T: wrong octave
+M: 4/4
+K:C
+V:1 instrument=F/D
+cdec z4
+V:2
+z4 c4
+
+Fix: Hudson Lacerda supplied me with pseudo-code (doc/hudsonshift.txt)
+which describes how all the transpose directives should work.
+This code was implemented in parseSoundScore() which now replaces
+parseSound(). It also fixes yaps.
+
+
+January 06 2023
+
+abcmidi ignores sound=cD in the following example.
+
+X:2
+T: sound + score
+M: 4/4
+K:C
+V:1 sound=cD score=FD
+cdec z4
+V:2
+z4 c4
+
+Analysis: *transpose is set to -10 by parseSoundScore when it
+processes sound=CD but when parseSoundScore is called again
+with score=FD it sets *transpose to 0, the initialized value
+of transp_sound. The last value of *transpose is used by
+event_voice.
+
+Fix: if parseSoundScore is called by the abc2midi executable,
+then *transpose is not set to transp_sound when the score=
+directive is processed. There is a similar issue when
+parseSoundScore is called by yaps. We do not want to set
+*transpose to transp_score when the sound= is processed.
+
+January 08 2023
+
+abc2abc should replicate the score=, shift=, sound=, and instrument=
+directives but otherwise ignore them.
+
+Fix:  parseSoundScore() in parseabc.c does nothing if it is
+called from abc2abc and return 0. The function parseother(),
+which is called from parsevoice() or parsekey(), will output
+all other directives in the K: or V: command.
+
+January 10 2023
+
+abcmidi: in event_handle_instruction(s), added code to recognize
+!ped(! and !ped)! in addition to !ped! and !ped-up!
+
+
+January 20 2023
+
+abc2midi: as remarked around June 04-06 2005, split bars and
+parts were never fully working. For example,
+
+%%quiet
+X:1
+T: split-part
+M:5/4
+L:1/8
+Q:1/4=132
+P:A6
+K:none
+%%MIDI channel 10
+P:A
+CDCDC CDCDC & [I:MIDI channel 10] z2E3 E5 |
+
+does not convert correctly to a midi file.
+
+Fix: the code in partbreak() seems to have been at fault.
+The program returns the wrong position of the voice in the
+feature array, causing the wrong notes to be sent to the
+active midi track. Permanently eliminating the function
+fillvoice and always calling findvoice, fixed one of the
+problems. The second fix was to replace findpart() with
+findvoice() when the PART feature is encountered. Findvoice()
+automatically calls findpart(). The external integer array,
+dependent_voice(), is no longer used and is also eliminated.
+(See this file December 12 2006.) These changes also appear
+to fix the bug addressed at the same date.
+
+
+February 07 2023
+abc2abc: in toabc.c, James Allwright has introduced a new option -c
+which replaces /2 with /. He also fixed the -h output in
+event_init() so that all options are listed.
+
+
+February 08 2023
+midi2abc, mftext, midistats: modified midifile.c so that it indicates where
+it encounters an unexpected byte in the input midi file.
+
+
+March 24 2023
+More functions for the percussion track was added to midistats.c to
+support some future analysis.
+
+
+June 25 2023
+Midistats runs incorrectly if the midi file has no program channel
+commands. When a program channel command is missing, the program should
+be the acoutic piano (0) by default.
+
+If more than one channel with the same program color, they should be
+added together.
+
+
+August 22 2023
+
+Midistats improved the calculation of the number of rhythm patterns
+in a channel (barChn[chan].rhythmPattern) by allowing for dithering
+of note onset. Introduced dithermargin variable in function
+stats_noteon(). In function, output_track_summary(), suppressed
+notemeanpitch for percussion channel.
+
+
+October 25 2023
+
+Midistats returns track activity (note on/off) for every track.
+
+
+November 1 2023
+
+Midistats returns the control volume settings for every track,
+identifies midi files whose note timings are not quantized.
+
+
+November 2 2023
+
+abc2midi bug: In the following example, not all notes are
+tied correctly.
+
+X:1
+T: tied note
+M: 2/4
+L: 1/4
+K: C
+D2-|:D2 |[1CD-:|[2CD|
+
+No fix is available.
+
+
+November 8 2023
+
+midistats: extended the size of arrays (midievents and pulsecounter) to
+handle certain midi files. The function stats_interpret_pulseCounter()
+can detect midi files containing triplets and nonquantized notes.
+
+midicopy: extended to handle midi files with up to 150 tracks.
+
+
+December 17 2023
+
+midicopy: The midi program number is not set properly for a few the
+midi files where the channel program numbers are set in a separate
+track. Midicopy processes and copies the tracks sequentially, and
+by the time it sees the channel program numbers in the separate
+track it is already too late. It would be necessary to rewrite
+midicopy so that it stores the entire midi file in memory prior to
+copying it to disk.
+
+midistats: Introducing a new option -nseqfor n where is a channel
+number. See drums.txt for a description.
+
+
+December 23 2023
+
+abc2midi: gchord bug
+
+The following example produces some strange artefacts on starting
+the midi file for some players.
+
+X:1
+T:Test
+L:1/8
+Q:1/2=30
+M:2/2
+%%MIDI gchord GHIc
+K:C
+GAB | "C"c4 C4 |
+
+Explanation: the output midi file plays a note with midi pitch 0
+in the accompaniment channel. The problem originates in the dogchords()
+function for switch case 'G': in genmidi.c. Since g_started is 0,
+the second branch of the if statement is executed, but the pitch
+value in gchordnotes[gchordnotes_size] contains 0.
+
+Fix: the switch statement should not be executed since g_started is
+0 (i.e. the gchord accompaniment does not start till "C" is encountered).
+The switch statement is now bypassed when either g_started 
+or gchords is 0. The tests for gchords and g_started in all the
+case statements were removed since they are unnecessary.
+
+
+
+December 28 2023
+
+abc2midi: tuplet bug
+
+The following example produces the error
+
+Warning in line-char 7-8 : Different length notes in tuple
+
+X:1
+T:Test
+L:1/4
+Q:1/4=90
+M:3/4
+K:D
+(3[ac']/d'/[ac']/ [ac']/z/ |
+
+Analysis: though it is legal to have different length notes (and
+rests) in a tuple, this is clearly a bug. The message occurs in the
+function event_note() in store.c. tnote_num and tnote_denom should
+contain the expected length of the note in the tuple based on the
+first note encountered in the tuple. The value of tnote_denom was
+not adjusted by event_chordoff to compensate by the length value
+specified at the end of the [ac'] chord, resulting in the problem.
 
 

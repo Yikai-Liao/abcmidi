@@ -112,7 +112,7 @@ long Mf_currtime = 0L;    /* current time in delta-time units */
 long Mf_toberead = 0L;
 long Mf_bytesread = 0L;
 
-static long Mf_numbyteswritten = 0L;
+long Mf_numbyteswritten = 0L; /* linking with store.c */
 
 static long readvarinum();
 static long read32bit();
@@ -198,6 +198,7 @@ char *s;
   int c;
 
   while ( n++<4 && (c=(*Mf_getc)()) != EOF ) {
+    Mf_bytesread++; /* [SS] 2023-02-08 */
     if ( c != *p++ ) {
       char buff[32];
       (void) strcpy(buff,"expecting ");
@@ -229,7 +230,7 @@ readheader()    /* read a header chunk */
     return;
 
   Mf_toberead = read32bit();
-  Mf_bytesread = 0;
+  /* Mf_bytesread = 0; [SS] 2023-01-08 */
   format = read16bit();
   ntrks = read16bit();
   division = read16bit();
@@ -272,6 +273,7 @@ readtrack()     /* read a track chunk */
   int status = 0;    /* status value (e.g. 0x90==note-on) */
   int laststatus;   /* for running status */
   int needed;
+  int time_increment;
   long varinum;
 
   laststatus = 0;
@@ -280,14 +282,18 @@ readtrack()     /* read a track chunk */
 
   Mf_toberead = read32bit();
   Mf_currtime = 0;
-  Mf_bytesread =0;
+  /* Mf_bytesread =0; [SS] 2022.02.08 */
 
   if ( Mf_trackstart )
     (*Mf_trackstart)();
 
   while ( Mf_toberead > 0 ) {
 
-    Mf_currtime += readvarinum();  /* delta time */
+    time_increment =  readvarinum();  /* delta time */
+    if (time_increment < 0) {printf("bad time increment = %d\n",time_increment);
+                             mferror("bad time increment");
+                            }
+    Mf_currtime += time_increment; /* [SS] 2018-06-13 */
 
     c = egetc();
 
@@ -392,9 +398,9 @@ static void
 badbyte(c)
 int c;
 {
-  char buff[32];
+  char buff[96]; /* [SS] 2022.02.08 */
 
-  (void) sprintf(buff,"unexpected byte: 0x%02x",c);
+  (void) sprintf(buff,"unexpected byte: 0x%02x at byte %ld (0x%lX)",c,Mf_bytesread,Mf_bytesread);
   mferror(buff);
 }
 
@@ -628,7 +634,9 @@ biggermsg()
   int oldleng = Msgsize;
 
   Msgsize += MSGINCREMENT;
-  newmess = (char *) malloc( (unsigned)(sizeof(char)*Msgsize) );
+/* to ensure a string is terminated with 0 [SS] 2017-08-30 */
+/*  newmess = (char *) malloc( (unsigned)(sizeof(char)*Msgsize) ); */
+  newmess = (char *) calloc( (unsigned)(sizeof(char)*Msgsize), sizeof(char));
 
   if(newmess == NULL)
     mferror("malloc error!");
@@ -723,7 +731,7 @@ FILE *fp;
 {
   long trkhdr,trklength;
   long offset, place_marker;
-  long endspace;
+  long endspace = 0; /* [SDG] 2020-06-02 */
 
 /* There is an alternate version of this code selected by NOFTELL
    which doesn't require use of file seek */

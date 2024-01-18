@@ -28,18 +28,31 @@
  *
  * Overview of function calls.
  * ---------------------------
- * All the work is done by mfwrite, which copies the
+ * All the work is done by build_new_midi_file, which copies the
  * tracks individually thru the function mf_write_track_chunk.
  * mf_write_track_chunk either copies the whole track verbatim
  * or else parses the track and copies each command individually
  * using the function readtrack(). readtrack calls chanmessage()
  * or metaevent () depending on the nature ofthe command.
+ *
+ * We never use verbatim transfer as of 2019-06-29
+ * so we can eliminate this flag.
+ *
+ * readtrack() reads a particular track selecting the data
+ * that it wishes to save in the character array trackdata.
  * 
+ * When you specify particular channels to copy, midicopy has
+ * to search all the tracks for those channels since it does
+ * not know which tracks contain those channels. (It is possible
+ * that a channel appears in several tracks. For example, one
+ * track contains the notes and another assigns the channel to
+ * a program.) The tracks that do not contain the desired channels
+ * are not saved to create a cleaner output file.
  */
 
 
 
-#define VERSION "1.22 November 15 2015"
+#define VERSION "1.39 November 07 2023 midicopy"
 #include "midicopy.h"
 #define NULLFUNC 0
 #define NULL 0
@@ -49,9 +62,8 @@
 #endif
 
 #include <stdio.h>
+#include <string.h>
 
-char *strcpy (), *strcat ();
-int strcmp();
 
 /* Functions to be called while processing the MIDI file. */
 int (*Mf_arbitrary) () = NULLFUNC;
@@ -84,6 +96,10 @@ long max_currtime = 0;
 long Mf_currcopytime = 0L;	/* time of last copied event */
 char *trackdata = NULL;
 long trackdata_length, trackdata_size;
+/* char *trackstr[64];  [SS] 2017-10-20  2019-07-05*/
+char *trackstr[150]; /* [SS] 2023-11-07 */
+int trackstr_length[150]; /* [SS] 2017-10-20 2019-07-05* 2023-11-07*/
+int trkid = 0;
 int activetrack;
 int nochanmsg = 1;
 long newtempo = 0;		/* to handle tempo [SS] 2013-09-04 */
@@ -95,6 +111,11 @@ int nondrumlevel = 0;		/* [SS] 2013-09-15 */
 int mutenodrum = 0;		/* [SS] 2013-09-15 */
 int chosen_drum = 0;		/* [SS] 2013-10-01 */
 int drumvelocity = 0;		/* [SS] 2013-10-01 */
+int attenuation = 70;           /* [SS] 2017-11-27 */
+int nobends = 0;                /* [SS] 2017-12-15 */
+int nopressure = 0;             /* [SS] 2022-05-05 */
+int nocntrl = 0;                /* [SS] 2022-05-05 */
+int zerochannels = 0;           /* [SS] 2020-10-09 */
 
 long Mf_numbyteswritten = 0L;
 long readvarinum ();
@@ -118,17 +139,25 @@ void biggermsg ();
 void WriteVarLen (long);
 
 
+/* tocopy, tfocus, hastempo extended to handle 64 tracks [SS] 2019-07-05*/
 int notechan[2048];		/* keeps track of running voices */
-int tocopy[32];			/* tracks to copy */
+int tocopy[64];			/* tracks to copy */
 int ctocopy[16];		/* channels to copy */
-int chnflag = 0;		/* flag indicating not all channels selected */
-int verbatim = 1;		/* flag for verbatim transfer */
+int dtocopy[82];                /* drums to copy  2019-12-22 */
+int tfocus[64];                 /* track focus    2017-11 27*/
+int cfocus[16];                 /* channel focus  2017-11-27*/
+int drmflag = 0;                /* flag indicating drums selected 2019-12-22 */
+int verbatim = 0;		/* flag for verbatim transfer 2019-06-29 */
+int haschannel[17];             /* for determining which channels are in use */
+int hastempo[64];		/* indicates whether tempo command in track */
 
 FILE *F_in, *fp;
 int format, ntrks, division;
 int start_tick, end_tick, flag_metaeot;
 float start_seconds, end_seconds;
-int use_seconds = 0;
+int use_seconds;
+int use_beats;
+int use_ticks;
 int current_tempo = 500000;
 float seconds_output;
 
@@ -179,6 +208,7 @@ close_note (int chan, int pitch)
 {
   int index;
   index = 128 * chan + pitch;
+  if (notechan[index] == -1) return -1; /*[SS] 2020-01-05  already closed */
   if (index < 0 || index > 2047)
     printf ("illegal chan/pitch %d %d\n", chan, pitch);
   notechan[index] = -1;
@@ -206,9 +236,9 @@ append_to_string (int c)
 {
   trackdata[trackdata_length] = c;
   trackdata_length++;
-  if (trackdata_length > trackdata_size)
+  if (trackdata_length > trackdata_size+6) /* [SS] 2019-06-05 */
     {
-      printf ("trackdata overflow\n");
+      printf ("trackdata %ld overflow at %ld for track %d\n",trackdata_length,Mf_currtime,activetrack);
       exit (1);
     }
 }
@@ -231,17 +261,28 @@ error (char *s)
 int
 cut_beginning ()
 {
-  if (Mf_currtime < start_tick)
-    return 1;
-  return 0;
+  if (use_seconds) {
+    if(currentseconds < start_seconds) return 1;
+    else {return 0;}
+  } else if (use_ticks) {
+    if (Mf_currtime < start_tick) return 1;
+    else {return 0;}
+  }
+return 0;
 }
+
 
 int
 cut_ending ()
 {
-  if (end_tick > 0 && Mf_currtime > end_tick)
-    return 1;
-  return 0;
+  if (use_seconds) {
+    if(currentseconds > end_seconds) return 1;
+    else {return 0;}
+ } else if (use_ticks) {
+  if (Mf_currtime > end_tick) return 1;
+  else {return 0;}
+ }
+return 0;
 }
 
 
@@ -253,12 +294,15 @@ void
 copy_noteon (int chan, int c1, int c2)
 {
   char data[2];
+  int notestatus;
+  if (cut_beginning ())
+    return;
+  notestatus = 0; /* [SS] 2020-01-05 */
   if (c2 > 0)
     open_note (chan, c1);
   else
-    close_note (chan, c1);
-  if (cut_beginning ())
-    return;
+    notestatus = close_note (chan, c1);
+  if (notestatus == -1) return; /* [SS] 2020-01-05 already turned off */
   data[0] = (char) c1;
   data[1] = (char) c2;
   mf_write_midi_event (0x90, chan, data, 2);
@@ -270,9 +314,11 @@ void
 copy_noteoff (int chan, int c1, int c2)
 {
   char data[2];
-  close_note (chan, c1);
+  int notestatus; /* [SS] 2020-01-05 */
   if (cut_beginning ())
     return;
+  notestatus = close_note (chan, c1);
+  if (notestatus == -1) return; /* [SS] 2020-01-05 note already not on */
   data[0] = (char) c1;
   data[1] = (char) c2;
   mf_write_midi_event (0x80, chan, data, 2);
@@ -342,7 +388,7 @@ copy_metatext (int type, int length, char *m)
 }
 
 void
-copy_timesig (c1, c2, c3, c4)
+midicopy_timesig (c1, c2, c3, c4)
 int c1, c2, c3, c4;
 {
   char data[4];
@@ -443,8 +489,12 @@ alloc_trackdata ()
   if (trackdata != NULL)
     free (trackdata);
 /* double it since running status is not preserved [SS] 2013-10-08 */
-  trackdata = (char *) malloc (Mf_toberead + Mf_toberead );
-  trackdata_size = Mf_toberead + Mf_toberead ;
+/* add another two bytes to cover winamp_compatibility
+/* for very short tracks. [SS] 2017-09-12 */
+/* There is no penalty for allocating to much. */
+  if (Mf_toberead < 2) Mf_toberead = 64; /* to handle MIDI header */
+  trackdata = (char *) malloc (Mf_toberead + Mf_toberead + 2);
+  trackdata_size = Mf_toberead + Mf_toberead + 2;
   trackdata_length = 0;
   trackdata[0] = 0;
 }
@@ -483,7 +533,8 @@ egetc ()
 {				/* read a single character and abort on EOF */
   int c = getc (F_in);
 
-  if (c == EOF)
+  /* if (c == EOF)                    [SS] 2017-09-12 */
+  if (c == EOF && Mf_toberead > 0) /* [SS] 2017-09-12 */
     mferror ("premature EOF");
   Mf_toberead--;
   return (c);
@@ -562,6 +613,10 @@ readtrack ()
   int laststatus;		/* for running status [SS] 2013-09-10 */
   int needed;
   long varinum;
+  int i;                        /* [SS] 2017-10-19 */
+  double delta_seconds;
+
+  for (i=0;i<17;i++) haschannel[i] = 0;
 
   laststatus = 0;		/* [SS] 2013-09-10 */
   tempo_index = 0;
@@ -576,6 +631,7 @@ readtrack ()
 
   alloc_trackdata ();
 
+  /* ignore anything before -from pulses */
   if (cut_beginning ())
     {
       delta_time = 0;
@@ -586,6 +642,9 @@ readtrack ()
     {
 
       delta_time = readvarinum ();
+      /* [SS] 2019-06-30 */
+      delta_seconds = (double) (60000*delta_time)/(double) (current_tempo * division);
+      currentseconds += delta_seconds;
       Mf_currtime += delta_time;
       if (cut_ending ())
 	{
@@ -631,6 +690,9 @@ readtrack ()
 	  /*if (Mf_currtime > Mf_currcopytime) accumulating = 1; */
 
 	  /* [SS] 2013-09-10 */
+/* chanmessages gathers all the channel messages which
+   includes note on/off, program changes, bends etc.
+*/
 	  if (running)
 	    {
 	      c1 = c;
@@ -858,7 +920,10 @@ get_tempo_info_from_track_1 ()
 	    }
 	  break;
 	default:
-	  badbyte (c);
+          /* since we are only interested in tempo meta commands, */
+          /* we do not care if we miss a byte.                    */
+	  /*badbyte (c); [SS] 2017-09-18                          */
+          /*printf("ignoring byte :0x%02x\n",c);  [SS] 2017-09-18 */
 	  break;
 	}
     }
@@ -918,6 +983,7 @@ metaevent (int type)
       copy_metaeot ();
       break;
     case 0x51:			/* Set tempo */
+      hastempo[activetrack] = 1;  /* [SS] 2017-12-14 */
       if (newtempo > 0)		/* [SS] 2013-09-04 */
 	mf_write_tempo (newtempo);
       else if (newspeed)
@@ -933,7 +999,7 @@ metaevent (int type)
       mf_write_meta_event (0x54, m, 5);
       break;
     case 0x58:
-      copy_timesig (m[0], m[1], m[2], m[3]);
+      midicopy_timesig (m[0], m[1], m[2], m[3]);
       break;
     case 0x59:
       copy_keysig (m[0], m[1]);
@@ -963,11 +1029,16 @@ void
 chanmessage (int status, int c1, int c2)
 {
   int chan = status & 0xf;
+  if (zerochannels) chan = 0; /* [SS] 2020-10-09 */
+  haschannel[chan] = 1;
 
   if (!cut_beginning ())
     nochanmsg = 0;
 
-  if (ctocopy[chan])
+/* only process the channels that we want */
+  if (ctocopy[chan]) {
+   if (drmflag == 0 || dtocopy[c1] == 1 && chan == 9 || chan != 9)  
+	   /* [SS] 2019-12-25 */
     switch (status & 0xf0)
       {
       case 0x80:
@@ -981,26 +1052,36 @@ chanmessage (int status, int c1, int c2)
 	     c2 = nondrumlevel;	/*[SS] 2013-09-15 */
         if (chan == 9 && chosen_drum != 0 && c1 == chosen_drum)
              c2 = drumvelocity; /* [SS] 2013-10-01 */
+        if (cfocus[chan] == 1) {   /* [SS] 2017-11-27 */
+             c2 = c2 - attenuation;
+             if (c2 <0) c2 = 0;
+             }
+        if (tfocus[activetrack] == 1) {   /* [SS] 2017-11-27 */
+             c2 = c2 - attenuation;
+             if (c2 <0) c2 = 0;
+             }
 	copy_noteon (chan, c1, c2);
 	break;
       case 0xa0:
-	copy_pressure (chan, c1, c2);
+        if (nopressure == 0) copy_pressure (chan, c1, c2);
 	break;
       case 0xb0:
+        if (nocntrl == 0)
 	copy_parameter (chan, c1, c2);
 	break;
       case 0xe0:
-	copy_pitchbend (chan, c1, c2);
+        if (nobends == 0)
+	  copy_pitchbend (chan, c1, c2);
 	break;
       case 0xc0:
 	copy_program (chan, c1);
 	break;
       case 0xd0:
-	copy_chanpressure (chan, c1);
+        if (nopressure == 0) copy_chanpressure (chan, c1);
 	break;
       }
+   }
 }
-
 
 
 
@@ -1159,6 +1240,12 @@ biggermsg ()
 
 
 
+void list_channels_in_use (int n) {
+int i;
+printf("trk = %d  ",n);
+for (i=0;i<16;i++) printf(" %d",haschannel[i]);
+printf("\n");
+}
 
 
 
@@ -1192,26 +1279,19 @@ biggermsg ()
  */
 
 void
-mfwrite (format, ntracks, division, fp)
+build_new_midi_file (format, ntracks, division, fp)
      int format, ntracks, division;
      FILE *fp;
 {
-  int i;
+  int i,j;
   void mf_write_track_chunk ();
   float track_time;
 
   seconds_output = 0.0;
-  temposize = 0;
-  tempo_array[temposize].tempo = current_tempo;
-  tempo_array[temposize].tick = 0;
-  tempo_array[temposize].seconds = 0.0;
-  temposize++;
 
   get_tempo_info_from_track_1 ();
-  if (start_seconds >= 0.0)
-    start_tick = seconds_to_tick (start_seconds);
-  if (end_seconds >= 0.0)
-    end_tick = seconds_to_tick (end_seconds);
+
+  if (ntracks > 149) {printf("too many tracks\n"); exit(1); }
 
   /* The rest of the file is a series of tracks */
   for (i = 0; i < ntracks; i++)
@@ -1228,16 +1308,31 @@ mfwrite (format, ntracks, division, fp)
 	  if (track_time > seconds_output)
 	    seconds_output = track_time;
 	  turn_off_all_playing_notes ();
+/*
+ * test
 	  if (i > 1 && nochanmsg)
 	    winamp_compatibility_measure ();
+*/
+          
 	  if (flag_metaeot)
 	    copy_metaeot ();	/*need end of track message */
 	  ignore_rest_of_track ();
 	}
       if (tocopy[i] == 1)
-	mf_write_track_chunk (i, fp);
+        /*list_channels_in_use(i); */
+        /* [SS] 2017-10-19] don't copy redundant tracks */
+        /* [SS] 2017-12-24 but make sure tracks with tempo is copied */
+        for (j=0;j<16;j++) {
+           if((ctocopy[j] == 1  && haschannel[j] == 1) || hastempo[i]) {
+              /* printf("writing track %d\n",i); */
+	      mf_write_track_chunk (i, fp);
+              break;  /* only write the track once */
+             }
+           }
     }
+/* printf("%d tracks saved\n",trkid); */
 }
+
 
 void
 winamp_compatibility_measure ()
@@ -1265,7 +1360,8 @@ writechanmsg_at_0 ()
   if (delta < 0)
     delta = 1000;
   data[0] = (char) 0;		/* pitch zero */
-  data[1] = (char) 0;		/* volume zero */
+  data[1] = (char) 1;		/* volume 1 so not confused with noteoff */
+                                /* [SS] 2020-01-05 */
   c = 0x9f;			/* MIDI ON channel 15 */
   WriteVarLen (0);
   eputc (c);
@@ -1301,18 +1397,25 @@ void
 mf_write_track_chunk (which_track, fp)
      int which_track;
      FILE *fp;
+/* We may not know how many tracks that we will output, so
+ * each track is transfered to a separate string in the
+ * array trackstr[]. At the end these strings will be
+ * recorded in the output file.
+*/
 {
   long trkhdr, trklength;
   void write16bit (), write32bit ();
   void WriteVarLen ();
-  int ier;
 
 
   trkhdr = MTrk;
   trklength = trackdata_length;
-  write32bit (trkhdr);
-  write32bit (trklength);
-  ier = fwrite (trackdata, 1, trackdata_length, fp);
+  /*ier = fwrite (trackdata, 1, trackdata_length, fp); */
+  trkid++;
+  trackstr[trkid] = (char *) malloc(trklength+2);
+  /* trackstr[trkid] = strcpy(trackstr[trkid],trackdata); */
+  memcpy(trackstr[trkid],trackdata,trklength);
+  trackstr_length[trkid] = trklength;
 /*  printf("  %d bytes written\n",ier); */
 }
 
@@ -1479,7 +1582,7 @@ mf_write_tempo (tempo)
 
 /* fudge to avoid large time gap at beginning */
 /* It assumes a constant tempo. */
-  if (use_seconds && start_tick == -1 && start_seconds > 0)
+  if (use_seconds && start_tick == -1 && start_seconds > 0) /* [SS] 2019-06-29*/
     {
       start_tick = (int) (start_seconds * 1000000.0 * division / tempo);
       Mf_currcopytime = start_tick;
@@ -1579,7 +1682,7 @@ eputc (char c)
 int
 seconds_to_tick (float seconds)
 {
-  int i, ind;
+  int i, ind=0; /* [SDG] 2020-06-02 */
   float tick, fraction;
   for (i = 0; i < temposize; i++)
     {
@@ -1686,28 +1789,36 @@ main (int argc, char *argv[])
   int arg;
   int trk[16], mtrks;
   int chn[16], chns;
+  int drm[20];  /* 2019-12-22 */
   int xtrks; /* [SS] 2013-10-28 */
+  int xchns; /* [SS] 2017-12-06 */
+  int xdrms; /* [SS] 2019-12-22 */
   int i;
   int byteloc, trknum;
   int repflag;
   char val;
   float start_beat, end_beat;
-  int use_beats;
   int beats_per_minute = 0;	/* [SS] 2013-09-04 */
+  long trkhdr; /* [SS] 2017-10-20 */
 
   for (i = 0; i < 32; i++)
     tocopy[i] = 1;
   for (i = 0; i < 16; i++)
     ctocopy[i] = 1;
+  for (i=0;i<32;i++) tfocus[i] = 0;  /* [SS] 2017-11-27 */
+  for (i=0;i<16;i++) cfocus[i] = 0;  /* [SS] 2017-11-27 */
+  for (i=0;i<32;i++) hastempo[i] = 0; /* [SS] 2017-12-14 */
   mtrks = 0;
   xtrks = 0;
   chns = 0;
+  xchns = 0;
   start_tick = -1;
   end_tick = -1;
-  start_seconds = -1.0;
-  end_seconds = -1.0;
+  start_seconds = -1.0;   /* [SS] 2019-06-30 */
+  end_seconds = -1.0; /* [SS] 2019-06-30 */
   use_seconds = 0;
   use_beats = 0;
+  use_ticks = 0;
 
   if (getarg ("-ver", argc, argv) >= 0)
     {
@@ -1725,7 +1836,8 @@ main (int argc, char *argv[])
       printf ("options:\n");
       printf ("-ver  version information\n");
       printf ("-trks n1,n2,..(starting from 1)\n");
-      printf ("-xtrks n1,n2, (tracks to exclude)\n"); /* [SS] 2013-10-27 */
+      printf ("-xtrks n1,n2,.. (tracks to exclude)\n"); /* [SS] 2013-10-27 */
+      printf ("-xchns n1,n2,.. (channels to exclude)\n"); /* [SS] 2022-11-12 */
       printf ("-chns n1,n2,..(starting from 1)\n");
       printf ("-from n (in midi ticks)\n");
       printf ("-to n   (in midi ticks)\n");
@@ -1739,6 +1851,17 @@ main (int argc, char *argv[])
       printf ("-drumfocus n (35 - 81) m (0 - 127)\n");	/* [SS] 2013-09-07 */
       printf ("-mutenodrum [level] \n");	/* [SS] 2013-09-15 */
       printf ("-setdrumloudness n (35-81) m (0 -127)\n"); /* [SS] 2013-10-01 */
+      printf ("-focusontracks n1,n2,... \n"); /* [SS] 2017-11-27 */
+      printf ("-focusonchannels n1,n2,...\n"); /* [SS] 2017-11-27 */
+      printf ("-attenuation n\n"); /* [SS] 2017-11-27 */
+      printf ("-nobends\n"); /* [SS] 2017-11-27 */
+      printf ("-nopressure\n"); /* [SS] 2022-05-05 */
+      printf ("-nocntrl\n"); /* [SS] 2022-05-05 */
+      printf ("-indrums n1,n2,... (drums to include)\n"); /* [SS] 2019-12-22 */
+      printf ("-xdrums n1,n2,... (drums to exclude)\n"); /* [SS] 2019-12-22 */
+      printf ("-onlydrums (only channel 10)\n"); /* [SS] 2019-12-22 */
+      printf ("-nodrums (exclude channel 10)\n"); /* [SS] 2019-12-22 */
+      printf ("-zerochannels  set all channel numbers to zero\n"); /* [SS] 2020-10-09 */
       exit (1);
     }
 
@@ -1749,10 +1872,10 @@ main (int argc, char *argv[])
 */
   arg = getarg ("-trks", argc, argv);
   if (arg >= 0)
-    mtrks = sscanf (argv[arg], "%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d",
+    mtrks = sscanf (argv[arg], "%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d",
 		    &trk[0], &trk[1], &trk[2], &trk[3], &trk[4],
 		    &trk[5], &trk[6], &trk[7], &trk[8], &trk[9], &trk[10],
-		    &trk[11]);
+		    &trk[11],&trk[12],&trk[13]);
   if (mtrks > 0)
     {
       /* printf("%d tracks specified\n", mtrks); */
@@ -1779,11 +1902,27 @@ main (int argc, char *argv[])
 	  tocopy[trk[i] - 1] = 0;
     }
 
+  arg = getarg("-xchns",argc,argv); /* [SS] 2017-12-06 */
+  if (arg >= 0)
+    xchns = sscanf (argv[arg], "%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d",
+		   &chn[0], &chn[1], &chn[2], &chn[3], &chn[4], &chn[5],
+		   &chn[6], &chn[7], &chn[8], &chn[9], &chn[10], &chn[11],
+                   &chn[12],&chn[13]);
+  if (xchns > 0)
+    {
+      for (i = 0; i < 16; i++)
+	ctocopy[i] = 1;
+      for (i = 0; i < xchns; i++)
+	if (chn[i] > 0 && chn[i] < 17)
+	  ctocopy[chn[i] - 1] = 0;
+    }
+
   arg = getarg ("-chns", argc, argv);
   if (arg >= 0)
-    chns = sscanf (argv[arg], "%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d",
+    chns = sscanf (argv[arg], "%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d",
 		   &chn[0], &chn[1], &chn[2], &chn[3], &chn[4], &chn[5],
-		   &chn[6], &chn[7], &chn[8], &chn[9], &chn[10], &chn[11]);
+		   &chn[6], &chn[7], &chn[8], &chn[9], &chn[10], &chn[11],
+                   &chn[12],&chn[13]);
   if (chns > 0)
     {
       for (i = 0; i < 16; i++)
@@ -1791,21 +1930,25 @@ main (int argc, char *argv[])
       for (i = 0; i < chns; i++)
 	if (chn[i] > 0 && chn[i] < 17)
 	  ctocopy[chn[i] - 1] = 1;
-      chnflag = 1;
-      verbatim = 0;
     }
+
   arg = getarg ("-from", argc, argv);
   if (arg >= 0)
     {
       sscanf (argv[arg], "%d", &start_tick);
-      verbatim = 0;
+      use_seconds = 0; /* [SS] 2019-06-29 */
+      use_beats = 0;
+      use_seconds = 0;
+      use_ticks = 1; /* [SS] 2019-06-30 */
     }
 
   arg = getarg ("-to", argc, argv);
   if (arg >= 0)
     {
       sscanf (argv[arg], "%d", &end_tick);
-      verbatim = 0;
+      use_seconds = 0; /* [SS] 2019-06-29 */
+      use_beats = 0;
+      use_ticks = 1; /* [SS] 2019-06-30 */
     }
 
   arg = getarg ("-fromsec", argc, argv);
@@ -1813,14 +1956,16 @@ main (int argc, char *argv[])
     {
       sscanf (argv[arg], "%f", &start_seconds);
       use_seconds = 1;
-      verbatim = 0;
+      use_ticks = 0;
+      use_beats = 0;
     }
   arg = getarg ("-tosec", argc, argv);
   if (arg >= 0)
     {
       sscanf (argv[arg], "%f", &end_seconds);
       use_seconds = 1;
-      verbatim = 0;
+      use_ticks = 0; /* [SS] 2019-06-30 */
+      use_beats = 0;
     }
 
   arg = getarg ("-frombeat", argc, argv);
@@ -1828,7 +1973,7 @@ main (int argc, char *argv[])
     {
       sscanf (argv[arg], "%f", &start_beat);
       use_beats = 1;
-      verbatim = 0;
+      use_seconds = 0; /* [SS] 2019-06-29 */
     }
 
   arg = getarg ("-tobeat", argc, argv);
@@ -1836,7 +1981,7 @@ main (int argc, char *argv[])
     {
       sscanf (argv[arg], "%f", &end_beat);
       use_beats = 1;
-      verbatim = 0;
+      use_seconds = 0; /* [SS] 2019-06-29 */
     }
 
 /* [SS] 2013-09-04 */
@@ -1847,7 +1992,6 @@ main (int argc, char *argv[])
       if (beats_per_minute > 0)
 	{
 	  newtempo = 60 * 1000000 / beats_per_minute;
-	  verbatim = 0;
 	}
     }
 
@@ -1861,14 +2005,12 @@ main (int argc, char *argv[])
       if (speedfactor < 0.05)
 	speedfactor = 0.05;
       newspeed = 1;
-      verbatim = 0;
     }
 
 /* [SS] 2013-09-07 */
   arg = getarg ("-drumfocus", argc, argv);
   if (arg >= 0)
     {
-      verbatim = 0;
       sscanf (argv[arg], "%d", &selected_drum);
       if (selected_drum < 35 || selected_drum > 81)
 	{
@@ -1889,7 +2031,6 @@ main (int argc, char *argv[])
   if (arg >= 0)
     {
       mutenodrum = 1;
-      verbatim = 0;
       sscanf (argv[arg], "%d", &nondrumlevel);
     }
 
@@ -1897,7 +2038,6 @@ main (int argc, char *argv[])
   arg = getarg ("-setdrumloudness", argc, argv);
   if (arg >= 0)
     {
-      verbatim = 0;
       sscanf (argv[arg], "%d", &chosen_drum);
       if (chosen_drum < 35 || chosen_drum > 81)
 	{
@@ -1913,11 +2053,107 @@ main (int argc, char *argv[])
 	}
     }
 
+/* [SS] 2017-11-27 */
+  mtrks = 0;
+  arg = getarg("-focusontracks",argc,argv);
+  if (arg >= 0)
+     {
+     mtrks = sscanf (argv[arg], "%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d",
+		    &trk[0], &trk[1], &trk[2], &trk[3], &trk[4],
+		    &trk[5], &trk[6], &trk[7], &trk[8], &trk[9], &trk[10],
+		    &trk[11]);
+     if (mtrks > 0)
+     {
+      /* printf("%d tracks specified\n", mtrks); */
+      for (i = 0; i < 32; i++)
+	tfocus[i] = 1; /* attenuation flag */
+      for (i = 0; i < mtrks; i++) {
+	if (trk[i] < 32 && trk[i] >= 0)
+          tfocus[trk[i]-1] = 0; /* track numbers start from 1*/
+        }
+      }
+    }
 
+/* [SS] 2017-11-27 */
+  arg = getarg("-focusonchannels",argc,argv);
+  if (arg >=0) {
+  chns = sscanf (argv[arg], "%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d",
+		   &chn[0], &chn[1], &chn[2], &chn[3], &chn[4], &chn[5],
+		   &chn[6], &chn[7], &chn[8], &chn[9], &chn[10], &chn[11]);
+  if (chns > 0)
+    {
+      for (i = 0; i < 16; i++)
+	cfocus[i] = 1;  /* attenuation flag */
+      for (i = 0; i < chns; i++)
+	if (chn[i] > 0 && chn[i] < 17)
+	  cfocus[chn[i] - 1] = 0; /* channel numbers start from 1 */
+     }
+  }
+
+  arg = getarg("-attenuation",argc,argv);
+  if (arg >= 0)
+    sscanf (argv[arg], "%d", &attenuation);
+
+  arg = getarg("-nobends",argc,argv);
+  if (arg >=0) nobends=1;
+
+  /* [SS] 2022-05-05 */
+  arg = getarg("-nopressure",argc,argv);
+  if (arg >=0) nopressure=1;
+
+  arg = getarg("-nocntrl",argc,argv);
+  if (arg >=0) nocntrl = 1;
 
   repflag = getarg ("-replace", argc, argv);
   if (repflag >= 0)
     sscanf (argv[repflag], "%d,%d,%c", &trknum, &byteloc, &val);
+
+  arg = getarg ("-indrums", argc, argv); /* [SS] 2019-12-22 */
+  if (arg >= 0) {
+    xdrms = sscanf (argv[arg], "%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d",
+		    &drm[0], &drm[1], &drm[2], &drm[3], &drm[4],
+		    &drm[5], &drm[6], &drm[7], &drm[8], &drm[9], &drm[10],
+		    &drm[11], &drm[12], &drm[13], &drm[14], &drm[15],
+		    &drm[16], &drm[17], &drm[18], &drm[19]);
+  if (xdrms > 0)
+    {
+      for (i = 0; i< 82; i++) 
+         dtocopy[i] = 0; /* percussion types to transfer */
+      for (i = 0; i<xdrms; i++)
+         if (drm[i] > 34 && drm[i] < 82)
+            dtocopy[drm[i]] = 1;
+    }
+    drmflag = 1;
+}
+
+  arg = getarg ("-xdrums", argc, argv); /* [SS] 2019-12-22 */
+  if (arg >= 0) {
+    xdrms = sscanf (argv[arg], "%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d",
+		    &drm[0], &drm[1], &drm[2], &drm[3], &drm[4],
+		    &drm[5], &drm[6], &drm[7], &drm[8], &drm[9], &drm[10],
+		    &drm[11], &drm[12], &drm[13], &drm[14], &drm[15],
+		    &drm[16], &drm[17], &drm[18], &drm[19]);
+    if (xdrms > 0) {
+      for (i = 0; i< 82; i++) 
+         dtocopy[i] = 1; /* percussion types to transfer */
+      for (i = 0; i<xdrms; i++)
+         if (drm[i] > 34 && drm[i] < 82)
+            dtocopy[drm[i]] = 0;
+    }
+    drmflag = 1;
+  }
+
+  arg = getarg("-onlydrums",argc,argv); /* [SS] 2019-12-22 */
+  if (arg >=0) {
+    for (i=0;i<16;i++) ctocopy[i] = 0;
+    ctocopy[9] = 1;
+    }
+
+  arg = getarg("-nodrums",argc,argv); /* [SS] 2019-12-22 */
+  if (arg >=0) ctocopy[9] = 0;     
+
+  arg = getarg("-zerochannels",argc,argv); /* [SS] 2020-10-09 */
+  if (arg >=0) zerochannels = 1;
 
   F_in = fopen (argv[argc - 2], "rb");
   if (F_in == NULL)
@@ -1940,8 +2176,16 @@ main (int argc, char *argv[])
 
 
   readheader ();
-  if (use_beats)
+
+  temposize = 0;               /* [SS] 2019-06-29 */
+  tempo_array[temposize].tempo = current_tempo;
+  tempo_array[temposize].tick = 0;
+  tempo_array[temposize].seconds = 0.0;
+  temposize++;
+
+  if (use_beats) /* [SS] 2019-06-29 */
     {
+      use_ticks = 1; /* [SS] 2019-06-30 */
       if (start_beat < 0.0)
 	start_tick = -1;
       else
@@ -1951,24 +2195,53 @@ main (int argc, char *argv[])
       else
 	end_tick = (int) (division * end_beat);
     }
+
+  else if (use_seconds) /* [SS] 2019-06-29 */
+   {
+   if (start_seconds >= 0.0)
+     start_tick = seconds_to_tick (start_seconds);
+   if (end_seconds >= 0.0)
+     end_tick = seconds_to_tick (end_seconds);
+   }
+
+   else { /* start_tick and end_tick already given */
+        }
+
   if (mtrks == 0)
     mtrks = ntrks;
 
   if (xtrks > 0)
     mtrks = ntrks - xtrks;
 
-  mf_write_header_chunk (format, mtrks, division);
+  /*mf_write_header_chunk (format, mtrks, division);*/
 
   if (repflag >= 0)
     replace_byte_in_file (trknum, byteloc, val, fp, mtrks);
   else
-    mfwrite (format, ntrks, division, fp);
+    build_new_midi_file (format, ntrks, division, fp);
 
+
+/* output new midi file and free up allocated space 
+ *[SS] 2017-10-20
+ * Now we know the number of tracks (trkid). mv_write_header_chunk
+ * writes directly to the output file.
+ */ 
+  mf_write_header_chunk (format, trkid, division);
+  for (i=1;i<=trkid;i++) {
+    /* write32bit writes directly to the file handle fp */
+    trkhdr = MTrk;
+    write32bit (trkhdr);
+    write32bit (trackstr_length[i]);
+    fwrite(trackstr[i],1,trackstr_length[i],fp);
+    free(trackstr[i]);
+    }
   free (trackdata);
   fclose (F_in);
   fclose (fp);
-  if (end_tick < 0)
-    end_tick = max_currtime;
+
+
+  /* if (end_tick < 0) [SS] 2019-06-29 */
+  end_tick = max_currtime;
   start_seconds = tick_to_seconds (start_tick);
   end_seconds = tick_to_seconds (end_tick);
   seconds_output = end_seconds - start_seconds;
