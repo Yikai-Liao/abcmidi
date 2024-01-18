@@ -29,9 +29,9 @@
  *
  */
 /* for Microsoft Visual C++ Ver 6 and higher */
-#ifdef _MSC_VER
-#define ANSILIBS
-#endif
+// #ifdef _MSC_VER
+// #define ANSILIBS
+// #endif
 
 #include "abc.h"
 #include "parseabc.h"
@@ -39,10 +39,10 @@
 #include "genmidi.h"
 #include "midifile.h"
 #include <stdio.h>
-#ifdef ANSILIBS
+// #ifdef ANSILIBS
 #include <string.h>
 #include <ctype.h>
-#endif
+// #endif
 /* define USE_INDEX if your C libraries have index() instead of strchr() */
 #ifdef USE_INDEX
 #define strchr index
