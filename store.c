@@ -1937,7 +1937,7 @@ double x, h3;
 int n;
 float w;
 /* h3 (1901.955) is the 3rd harmonic (fifth+octave) represented in cents */
-h3 = 1200.0 * log (3.0)/log(2.0);  /* 1200 * log2(3.0) */
+h3 = 1200.0 * myln(3.0)/myln(2.0);  /* 1200 * log2(3.0) */
 x = h3 - octave_size;           /* fifth reduced by the tempered octave */
 n = (int) (0.5 + x * ndiv / octave_size);     /* fifth in integer steps */
 w = n * octave_size / ndiv;                   /* fifth quantized according to temperament */
@@ -4457,8 +4457,9 @@ if (i!=12) {
 	event_error("%%temperament expects 12 numbers");
 	return;
 }
+#define ABS(x) ((x)<0?-(x):(x))
 for (i=0;i<12;i++) {
-	if (fabs(dt[i]) > 200.0) {
+	if (ABS(dt[i]) > 200.0) {
 		event_error("%%temperament detune cannot be greater than +- 200 cents");
 		return;
 	}
