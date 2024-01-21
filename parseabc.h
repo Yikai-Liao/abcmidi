@@ -5,9 +5,9 @@
 /* functions and variables provided by parseabc.c */
 
 /* for Microsoft Visual C++ 6 */
-#ifdef _MSC_VER
-#define KANDR
-#endif
+// #ifdef _MSC_VER
+// #define KANDR
+// #endif
 
 #include "music_utils.h"
 
